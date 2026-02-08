@@ -58,6 +58,7 @@ class RentalManager:
         self._sync_manager: Optional[SyncManager] = None
         self._running = False
         self._polling = False
+        self._auto_lock_toggled_for: set[str] = set()  # booking UIDs where auto-lock was toggled
 
     async def initialize(self) -> None:
         """Initialize the manager and all components."""
@@ -272,6 +273,59 @@ class RentalManager:
 
     # Scheduler callbacks
 
+    async def _is_whole_house_booking(self, booking_uid: str) -> bool:
+        """Check if a booking belongs to a whole-house or both-houses calendar."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Booking)
+                .options(selectinload(Booking.calendar))
+                .where(Booking.uid == booking_uid)
+            )
+            booking = result.scalar_one_or_none()
+            if booking and booking.calendar:
+                return booking.calendar.calendar_type in ("whole_house", "both_houses")
+        return False
+
+    async def _set_auto_lock_all(self, enabled: bool, reason: str) -> None:
+        """Set auto-lock on all locks with retry and failure notification."""
+        action = "enable" if enabled else "disable"
+        logger.info(f"Auto-lock {action} on all locks: {reason}")
+
+        async with get_session_context() as session:
+            result = await session.execute(select(Lock))
+            locks = result.scalars().all()
+
+            failures = []
+            for lock in locks:
+                success = False
+                for attempt in range(4):  # 1 try + 3 retries
+                    try:
+                        await self._ha_client.set_auto_lock(lock.entity_id, enabled)
+                        success = True
+                        break
+                    except Exception as e:
+                        if attempt < 3:
+                            await asyncio.sleep(5 * (attempt + 1))
+                        else:
+                            failures.append((lock.entity_id, str(e)))
+
+                audit = AuditLog(
+                    action=f"auto_lock_{'enabled' if enabled else 'disabled'}",
+                    lock_id=lock.id,
+                    details=reason,
+                    success=success,
+                    error_message=failures[-1][1] if not success else None,
+                )
+                session.add(audit)
+
+            await session.commit()
+
+        if failures:
+            failed_locks = ", ".join(f[0] for f in failures)
+            await self._notify_failure(
+                f"Failed to {action} auto-lock on: {failed_locks}. Reason: {reason}"
+            )
+
     async def _on_code_activate(
         self, lock_entity_id: str, slot_number: int, code: str, booking_uid: str
     ) -> None:
@@ -285,6 +339,14 @@ class RentalManager:
             await self._sync_manager.set_code(
                 lock_entity_id, slot_number, code, booking_uid
             )
+
+        # Disable auto-lock for whole-house bookings (once per booking)
+        if booking_uid not in self._auto_lock_toggled_for:
+            if await self._is_whole_house_booking(booking_uid):
+                self._auto_lock_toggled_for.add(booking_uid)
+                await self._set_auto_lock_all(
+                    False, f"Whole-house check-in: {booking_uid}"
+                )
 
         # Log to audit
         async with get_session_context() as session:
@@ -314,6 +376,14 @@ class RentalManager:
 
         if self._sync_manager:
             await self._sync_manager.clear_code(lock_entity_id, slot_number, booking_uid)
+
+        # Re-enable auto-lock when whole-house booking checks out (once per booking)
+        if booking_uid in self._auto_lock_toggled_for:
+            if await self._is_whole_house_booking(booking_uid):
+                self._auto_lock_toggled_for.discard(booking_uid)
+                await self._set_auto_lock_all(
+                    True, f"Whole-house check-out: {booking_uid}"
+                )
 
         # Log to audit
         async with get_session_context() as session:
