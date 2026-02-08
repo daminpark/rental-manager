@@ -15,6 +15,7 @@ class LockType(str, Enum):
     BATHROOM = "bathroom"
     KITCHEN = "kitchen"
     FRONT = "front"
+    BACK = "back"
     STORAGE = "storage"
 
 
@@ -70,6 +71,7 @@ DEFAULT_TIMINGS: dict[LockType, DefaultTiming] = {
     LockType.BATHROOM: DefaultTiming(activate=time(15, 0), deactivate=time(11, 0)),
     LockType.KITCHEN: DefaultTiming(activate=time(15, 0), deactivate=time(11, 0)),
     LockType.FRONT: DefaultTiming(activate=time(11, 0), deactivate=time(14, 0)),
+    LockType.BACK: DefaultTiming(activate=time(0, 0), deactivate=time(0, 0)),  # Master code only, no guest timing
     LockType.STORAGE: DefaultTiming(activate=time(1, 0), deactivate=time(23, 59)),
 }
 
@@ -141,6 +143,12 @@ def build_locks(house_code: str) -> list[LockConfig]:
     ]
 
     return [
+        LockConfig(
+            entity_id=f"lock.{house_code}_back_lock",
+            lock_type=LockType.BACK,
+            calendars=[],  # Master code only — no guest codes
+            stagger_minutes=0,
+        ),
         LockConfig(
             entity_id=f"lock.{house_code}_front_lock",
             lock_type=LockType.FRONT,
