@@ -58,7 +58,6 @@ class RentalManager:
         self._sync_manager: Optional[SyncManager] = None
         self._running = False
         self._polling = False
-        self._auto_lock_toggled_for: set[str] = set()  # booking UIDs where auto-lock was toggled
 
     async def initialize(self) -> None:
         """Initialize the manager and all components."""
@@ -81,6 +80,8 @@ class RentalManager:
             on_calendar_poll=self._poll_calendars,
             on_code_finalize=self._on_code_finalize,
             on_emergency_rotate=self._on_emergency_rotate,
+            on_whole_house_checkin=self._whole_house_checkin,
+            on_whole_house_checkout=self._whole_house_checkout,
             poll_interval_seconds=self.settings.calendar_poll_interval,
         )
 
@@ -273,57 +274,89 @@ class RentalManager:
 
     # Scheduler callbacks
 
-    async def _is_whole_house_booking(self, booking_uid: str) -> bool:
-        """Check if a booking belongs to a whole-house or both-houses calendar."""
-        async with get_session_context() as session:
-            result = await session.execute(
-                select(Booking)
-                .options(selectinload(Booking.calendar))
-                .where(Booking.uid == booking_uid)
-            )
-            booking = result.scalar_one_or_none()
-            if booking and booking.calendar:
-                return booking.calendar.calendar_type in ("whole_house", "both_houses")
-        return False
+    async def _whole_house_checkin(self, booking_uid: str) -> None:
+        """Whole-house check-in: disable auto-lock and unlock all internal locks."""
+        logger.info(f"Whole-house check-in routine for booking {booking_uid}")
+        await self._set_internal_locks(
+            auto_lock=False, lock_action="unlock",
+            reason=f"Whole-house check-in: {booking_uid}",
+        )
 
-    async def _set_auto_lock_all(self, enabled: bool, reason: str) -> None:
-        """Set auto-lock on all locks with retry and failure notification."""
-        action = "enable" if enabled else "disable"
-        logger.info(f"Auto-lock {action} on all locks: {reason}")
+    async def _whole_house_checkout(self, booking_uid: str) -> None:
+        """Whole-house check-out: enable auto-lock and lock all internal locks."""
+        logger.info(f"Whole-house check-out routine for booking {booking_uid}")
+        await self._set_internal_locks(
+            auto_lock=True, lock_action="lock",
+            reason=f"Whole-house check-out: {booking_uid}",
+        )
+
+    async def _set_internal_locks(
+        self, auto_lock: bool, lock_action: str, reason: str
+    ) -> None:
+        """Set auto-lock and lock/unlock on all internal locks (not front/back).
+
+        Retries each lock up to 3 times. Notifies on failure.
+        """
+        action_desc = f"auto-lock {'on' if auto_lock else 'off'} + {lock_action}"
+        logger.info(f"Internal locks: {action_desc} — {reason}")
+
+        INTERNAL_TYPES = ("room", "bathroom", "kitchen", "storage")
 
         async with get_session_context() as session:
             result = await session.execute(select(Lock))
-            locks = result.scalars().all()
+            locks = [l for l in result.scalars().all() if l.lock_type in INTERNAL_TYPES]
 
             failures = []
             for lock in locks:
-                success = False
-                for attempt in range(4):  # 1 try + 3 retries
+                # Set auto-lock
+                al_success = False
+                al_error = None
+                for attempt in range(4):
                     try:
-                        await self._ha_client.set_auto_lock(lock.entity_id, enabled)
-                        success = True
+                        await self._ha_client.set_auto_lock(lock.entity_id, auto_lock)
+                        al_success = True
                         break
                     except Exception as e:
+                        al_error = str(e)
                         if attempt < 3:
                             await asyncio.sleep(5 * (attempt + 1))
+
+                # Lock or unlock
+                la_success = False
+                la_error = None
+                for attempt in range(4):
+                    try:
+                        if lock_action == "unlock":
+                            await self._ha_client.unlock(lock.entity_id)
                         else:
-                            failures.append((lock.entity_id, str(e)))
+                            await self._ha_client.lock(lock.entity_id)
+                        la_success = True
+                        break
+                    except Exception as e:
+                        la_error = str(e)
+                        if attempt < 3:
+                            await asyncio.sleep(5 * (attempt + 1))
+
+                if not al_success:
+                    failures.append((lock.entity_id, f"auto-lock: {al_error}"))
+                if not la_success:
+                    failures.append((lock.entity_id, f"{lock_action}: {la_error}"))
 
                 audit = AuditLog(
-                    action=f"auto_lock_{'enabled' if enabled else 'disabled'}",
+                    action=f"whole_house_{lock_action}",
                     lock_id=lock.id,
                     details=reason,
-                    success=success,
-                    error_message=failures[-1][1] if not success else None,
+                    success=al_success and la_success,
+                    error_message=al_error or la_error,
                 )
                 session.add(audit)
 
             await session.commit()
 
         if failures:
-            failed_locks = ", ".join(f[0] for f in failures)
+            failed_desc = "; ".join(f"{f[0]}: {f[1]}" for f in failures)
             await self._notify_failure(
-                f"Failed to {action} auto-lock on: {failed_locks}. Reason: {reason}"
+                f"Whole-house lock routine failed — {failed_desc}. Reason: {reason}"
             )
 
     async def _on_code_activate(
@@ -339,14 +372,6 @@ class RentalManager:
             await self._sync_manager.set_code(
                 lock_entity_id, slot_number, code, booking_uid
             )
-
-        # Disable auto-lock for whole-house bookings (once per booking)
-        if booking_uid not in self._auto_lock_toggled_for:
-            if await self._is_whole_house_booking(booking_uid):
-                self._auto_lock_toggled_for.add(booking_uid)
-                await self._set_auto_lock_all(
-                    False, f"Whole-house check-in: {booking_uid}"
-                )
 
         # Log to audit
         async with get_session_context() as session:
@@ -376,14 +401,6 @@ class RentalManager:
 
         if self._sync_manager:
             await self._sync_manager.clear_code(lock_entity_id, slot_number, booking_uid)
-
-        # Re-enable auto-lock when whole-house booking checks out (once per booking)
-        if booking_uid in self._auto_lock_toggled_for:
-            if await self._is_whole_house_booking(booking_uid):
-                self._auto_lock_toggled_for.discard(booking_uid)
-                await self._set_auto_lock_all(
-                    True, f"Whole-house check-out: {booking_uid}"
-                )
 
         # Log to audit
         async with get_session_context() as session:
@@ -582,6 +599,19 @@ class RentalManager:
                             booking_uid=parsed.uid,
                             calendar_id=calendar.calendar_id,
                             finalize_at=finalize_at,
+                        )
+
+                    # Schedule whole-house auto-lock toggle for whole_house/both_houses calendars
+                    if calendar.calendar_type in ("whole_house", "both_houses") and self._scheduler:
+                        self._scheduler.schedule_whole_house(
+                            booking_uid=parsed.uid,
+                            check_in_date=parsed.check_in_date,
+                            check_out_date=parsed.check_out_date,
+                        )
+                        logger.info(
+                            f"Scheduled whole-house auto-lock toggle for {parsed.guest_name} "
+                            f"check-in {parsed.check_in_date} 14:30, "
+                            f"check-out {parsed.check_out_date} 11:30"
                         )
 
     async def _schedule_booking_codes(

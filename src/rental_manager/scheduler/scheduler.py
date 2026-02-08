@@ -22,6 +22,8 @@ class JobType(str, Enum):
     DEACTIVATE_CODE = "deactivate_code"
     CALENDAR_POLL = "calendar_poll"
     SYNC_CHECK = "sync_check"
+    WHOLE_HOUSE_CHECKIN = "whole_house_checkin"
+    WHOLE_HOUSE_CHECKOUT = "whole_house_checkout"
 
 
 @dataclass
@@ -62,6 +64,8 @@ class CodeScheduler:
         on_calendar_poll: Callable[[], Awaitable[None]],
         on_code_finalize: Optional[Callable[[str, str], Awaitable[None]]] = None,
         on_emergency_rotate: Optional[Callable[[], Awaitable[None]]] = None,
+        on_whole_house_checkin: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_whole_house_checkout: Optional[Callable[[str], Awaitable[None]]] = None,
         poll_interval_seconds: int = 120,
     ):
         """Initialize the scheduler.
@@ -75,6 +79,10 @@ class CodeScheduler:
             on_code_finalize: Callback to finalize a code at 11am day before check-in.
                 Args: (booking_uid, calendar_id)
             on_emergency_rotate: Callback to rotate all emergency codes weekly.
+            on_whole_house_checkin: Callback at 14:30 on whole-house check-in day.
+                Args: (booking_uid)
+            on_whole_house_checkout: Callback at 11:30 on whole-house check-out day.
+                Args: (booking_uid)
             poll_interval_seconds: How often to poll calendars.
         """
         self._on_activate = on_activate
@@ -82,6 +90,8 @@ class CodeScheduler:
         self._on_calendar_poll = on_calendar_poll
         self._on_code_finalize = on_code_finalize
         self._on_emergency_rotate = on_emergency_rotate
+        self._on_whole_house_checkin = on_whole_house_checkin
+        self._on_whole_house_checkout = on_whole_house_checkout
         self._poll_interval = poll_interval_seconds
 
         self._scheduler = AsyncIOScheduler()
@@ -171,6 +181,86 @@ class CodeScheduler:
                 await self._on_code_finalize(booking_uid, calendar_id)
             except Exception as e:
                 logger.error(f"Error finalizing code for booking {booking_uid}: {e}")
+
+    async def _handle_whole_house_checkin(self, booking_uid: str) -> None:
+        """Handle whole-house check-in (14:30 on check-in day)."""
+        job_id = f"wh_checkin_{booking_uid}"
+        if job_id in self._scheduled_jobs:
+            del self._scheduled_jobs[job_id]
+
+        if self._on_whole_house_checkin:
+            try:
+                await self._on_whole_house_checkin(booking_uid)
+            except Exception as e:
+                logger.error(f"Error in whole-house check-in routine for {booking_uid}: {e}")
+
+    async def _handle_whole_house_checkout(self, booking_uid: str) -> None:
+        """Handle whole-house check-out (11:30 on check-out day)."""
+        job_id = f"wh_checkout_{booking_uid}"
+        if job_id in self._scheduled_jobs:
+            del self._scheduled_jobs[job_id]
+
+        if self._on_whole_house_checkout:
+            try:
+                await self._on_whole_house_checkout(booking_uid)
+            except Exception as e:
+                logger.error(f"Error in whole-house check-out routine for {booking_uid}: {e}")
+
+    def schedule_whole_house(
+        self, booking_uid: str, check_in_date: "date", check_out_date: "date"
+    ) -> tuple[str, str]:
+        """Schedule whole-house check-in (14:30) and check-out (11:30) routines.
+
+        Returns:
+            Tuple of (checkin_job_id, checkout_job_id)
+        """
+        from datetime import date as date_type
+
+        now = datetime.now()
+
+        # Check-in: 14:30 on check-in day
+        checkin_job_id = f"wh_checkin_{booking_uid}"
+        checkin_time = datetime.combine(check_in_date, datetime.min.time().replace(hour=14, minute=30))
+
+        if checkin_time <= now:
+            asyncio.create_task(self._handle_whole_house_checkin(booking_uid))
+        else:
+            self._scheduler.add_job(
+                self._handle_whole_house_checkin,
+                DateTrigger(run_date=checkin_time),
+                args=[booking_uid],
+                id=checkin_job_id,
+                replace_existing=True,
+            )
+            self._scheduled_jobs[checkin_job_id] = ScheduledJob(
+                job_id=checkin_job_id,
+                job_type=JobType.WHOLE_HOUSE_CHECKIN,
+                run_at=checkin_time,
+                booking_uid=booking_uid,
+            )
+
+        # Check-out: 11:30 on check-out day
+        checkout_job_id = f"wh_checkout_{booking_uid}"
+        checkout_time = datetime.combine(check_out_date, datetime.min.time().replace(hour=11, minute=30))
+
+        if checkout_time <= now:
+            asyncio.create_task(self._handle_whole_house_checkout(booking_uid))
+        else:
+            self._scheduler.add_job(
+                self._handle_whole_house_checkout,
+                DateTrigger(run_date=checkout_time),
+                args=[booking_uid],
+                id=checkout_job_id,
+                replace_existing=True,
+            )
+            self._scheduled_jobs[checkout_job_id] = ScheduledJob(
+                job_id=checkout_job_id,
+                job_type=JobType.WHOLE_HOUSE_CHECKOUT,
+                run_at=checkout_time,
+                booking_uid=booking_uid,
+            )
+
+        return checkin_job_id, checkout_job_id
 
     def schedule_finalization(
         self, booking_uid: str, calendar_id: str, finalize_at: datetime
