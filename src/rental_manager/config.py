@@ -210,28 +210,9 @@ def build_locks(house_code: str) -> list[LockConfig]:
     ]
 
 
-# Calendar iCal URLs keyed by calendar_id
-_CALENDAR_URLS: dict[str, str] = {
-    "195_room_1": "",
-    "195_room_2": "",
-    "195_room_3": "",
-    "195_room_4": "",
-    "195_room_5": "",
-    "195_room_6": "",
-    "195_suite_a": "",
-    "195_suite_b": "",
-    "195vbr": "",
-    "193_room_1": "",
-    "193_room_2": "",
-    "193_room_3": "",
-    "193_room_4": "",
-    "193_room_5": "",
-    "193_room_6": "",
-    "193_suite_a": "",
-    "193_suite_b": "",
-    "193vbr": "",  # TBD - need 193vbr calendar URL
-    "193195vbr": "",  # TBD - need 193195vbr calendar URL
-}
+# Calendar iCal URLs are configured via the web UI after installation.
+# On first run, calendars are created with empty URLs.
+# Go to the Calendars view to set each calendar's iCal URL.
 
 # Calendar metadata keyed by calendar_id
 _CALENDAR_META: dict[str, tuple[str, CalendarType, list[int]]] = {
@@ -275,7 +256,7 @@ def build_calendars(house_code: str) -> list[CalendarConfig]:
                 calendar_id=cal_id,
                 name=name,
                 calendar_type=cal_type,
-                ical_url=_CALENDAR_URLS.get(cal_id, ""),
+                ical_url="",
                 rooms=rooms,
             ))
 
