@@ -3,6 +3,7 @@
 import asyncio
 import random
 from datetime import datetime, date, time, timedelta
+from pathlib import Path
 from typing import Optional
 import logging
 
@@ -130,10 +131,40 @@ class RentalManager:
             if not houses:
                 await self._create_default_config(session)
 
+    def _urls_file(self) -> Path:
+        """Path to the persistent calendar URLs file."""
+        db_url = self.settings.database_url
+        # Extract directory from DB path (e.g. "sqlite+aiosqlite:///data/x.db" -> "/data")
+        if ":///" in db_url:
+            db_path = db_url.split(":///", 1)[1]
+            return Path(db_path).parent / "calendar_urls.json"
+        return Path("calendar_urls.json")
+
+    def _save_calendar_urls(self, urls: dict[str, str]) -> None:
+        """Save calendar URLs to persistent file."""
+        import json
+        path = self._urls_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(urls, indent=2))
+        logger.info("Saved %d calendar URLs to %s", len(urls), path)
+
+    def _load_calendar_urls(self) -> dict[str, str]:
+        """Load calendar URLs from persistent file."""
+        import json
+        path = self._urls_file()
+        if path.exists():
+            urls = json.loads(path.read_text())
+            logger.info("Loaded %d calendar URLs from %s", len(urls), path)
+            return urls
+        return {}
+
     async def _create_default_config(self, session: AsyncSession) -> None:
         """Create default configuration in database."""
         house_code = self.settings.house_code
         logger.info("Creating default configuration for house %s...", house_code)
+
+        # Load saved URLs from previous install (survives DB wipe)
+        saved_urls = self._load_calendar_urls()
 
         # Create house
         house = HouseModel(
@@ -152,7 +183,7 @@ class RentalManager:
                 calendar_id=cal_config.calendar_id,
                 name=cal_config.name,
                 calendar_type=cal_config.calendar_type.value,
-                ical_url=cal_config.ical_url,
+                ical_url=saved_urls.get(cal_config.calendar_id, cal_config.ical_url),
             )
             session.add(cal)
             calendar_map[cal_config.calendar_id] = cal

@@ -295,6 +295,11 @@ async def update_calendar_url(
         calendar.ical_url = request.ical_url
         await session.commit()
 
+        # Persist all URLs to file (survives DB wipe)
+        all_cals = await session.execute(select(Calendar))
+        urls = {c.calendar_id: c.ical_url for c in all_cals.scalars().all() if c.ical_url}
+        manager._save_calendar_urls(urls)
+
         return {
             "calendar_id": calendar.calendar_id,
             "ical_url": calendar.ical_url,
