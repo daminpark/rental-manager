@@ -189,31 +189,31 @@ def build_locks(house_code: str) -> list[LockConfig]:
             entity_id=f"lock.{house_code}_2_lock",
             lock_type=LockType.ROOM,
             calendars=[f"{house_code}_room_2", f"{house_code}_suite_a", f"{house_code}vbr", "193195vbr"],
-            stagger_minutes=2,
+            stagger_minutes=0,
         ),
         LockConfig(
             entity_id=f"lock.{house_code}_3_lock",
             lock_type=LockType.ROOM,
             calendars=[f"{house_code}_room_3", f"{house_code}vbr", "193195vbr"],
-            stagger_minutes=4,
+            stagger_minutes=0,
         ),
         LockConfig(
             entity_id=f"lock.{house_code}_4_lock",
             lock_type=LockType.ROOM,
             calendars=[f"{house_code}_room_4", f"{house_code}_suite_b", f"{house_code}vbr", "193195vbr"],
-            stagger_minutes=6,
+            stagger_minutes=0,
         ),
         LockConfig(
             entity_id=f"lock.{house_code}_5_lock",
             lock_type=LockType.ROOM,
             calendars=[f"{house_code}_room_5", f"{house_code}_suite_b", f"{house_code}vbr", "193195vbr"],
-            stagger_minutes=8,
+            stagger_minutes=0,
         ),
         LockConfig(
             entity_id=f"lock.{house_code}_6_lock",
             lock_type=LockType.ROOM,
             calendars=[f"{house_code}_room_6", f"{house_code}_suite_b", f"{house_code}vbr", "193195vbr"],
-            stagger_minutes=10,
+            stagger_minutes=0,
         ),
     ]
 

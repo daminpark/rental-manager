@@ -841,7 +841,6 @@ class RentalManager:
                     "emergency_code": lock.emergency_code,
                 }
                 for lock in locks
-                if lock.lock_type != "back"
             ]
 
     async def randomize_emergency_codes(
@@ -854,7 +853,7 @@ class RentalManager:
                 query = query.where(Lock.id.in_(lock_ids))
 
             result = await session.execute(query)
-            locks = [l for l in result.scalars().all() if l.lock_type != "back"]
+            locks = result.scalars().all()
 
             success_count = 0
             errors = []
