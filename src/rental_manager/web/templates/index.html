@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rental Manager</title>
+    <link rel="stylesheet" href="static/css/styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>Rental Manager</h1>
+                <p id="house-subtitle">Loading...</p>
+            </div>
+
+            <nav>
+                <div class="nav-section">
+                    <div class="nav-section-title">Overview</div>
+                    <div class="nav-item active" data-view="locks">
+                        <span class="nav-item-icon">🔐</span>
+                        Locks
+                    </div>
+                    <div class="nav-item" data-view="bookings">
+                        <span class="nav-item-icon">📅</span>
+                        Bookings
+                    </div>
+                    <div class="nav-item" data-view="calendars">
+                        <span class="nav-item-icon">📆</span>
+                        Calendars
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-title">System</div>
+                    <div class="nav-item" data-view="codes">
+                        <span class="nav-item-icon">🔑</span>
+                        Codes
+                    </div>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-title">Status</div>
+                    <div id="sync-status" class="nav-item" style="cursor: default;">
+                        <div class="sync-status">
+                            <span class="sync-status-icon active"></span>
+                            <span>Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Locks View -->
+            <div id="locks-view" class="view-content">
+                <div class="page-header">
+                    <h2 class="page-title">Locks</h2>
+                </div>
+
+                <div id="lock-grid" class="lock-grid">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Loading locks...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bookings View -->
+            <div id="bookings-view" class="view-content" style="display: none;">
+                <div class="page-header">
+                    <h2 class="page-title">Bookings</h2>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary" onclick="refreshCalendars()">
+                            Refresh Calendars
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="table-container" id="bookings-table">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            Loading bookings...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calendars View -->
+            <div id="calendars-view" class="view-content" style="display: none;">
+                <div class="page-header">
+                    <h2 class="page-title">Calendars</h2>
+                    <div class="header-actions">
+                        <button class="btn btn-primary" onclick="refreshCalendars()">
+                            Refresh All
+                        </button>
+                    </div>
+                </div>
+
+                <div id="calendars-list">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Loading calendars...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Codes View (Master + Emergency) -->
+            <div id="codes-view" class="view-content" style="display: none;">
+                <div class="page-header">
+                    <h2 class="page-title">Codes</h2>
+                    <div class="header-actions">
+                        <button class="btn btn-danger" onclick="randomizeEmergencyCodes()">
+                            Randomize Emergency Codes
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Master Code Section -->
+                <div class="card" style="margin-bottom: 1.5rem;">
+                    <div class="card-header">
+                        <span class="card-title">Master Code (Slot 1)</span>
+                    </div>
+                    <div style="padding: 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                        <div>
+                            <label class="form-label" style="margin-bottom: 0.25rem;">4-Digit Code</label>
+                            <input type="text" id="master-code-input" class="form-input"
+                                maxlength="4" pattern="[0-9]{4}" placeholder="1234"
+                                style="width: 100px; font-family: monospace; font-size: 1.1rem; text-align: center;">
+                        </div>
+                        <div style="align-self: flex-end;">
+                            <button class="btn btn-primary" onclick="setMasterCode()">Set Master Code</button>
+                        </div>
+                        <div id="master-code-current" style="color: var(--text-secondary); font-size: 0.85rem; margin-left: auto;">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Emergency Codes Section -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Emergency Codes (Slot 20)</span>
+                        <span style="color: var(--text-secondary); font-size: 0.8rem;">Auto-rotates every Monday at 3am</span>
+                    </div>
+                    <div id="emergency-codes-list" style="padding: 0.5rem;">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            Loading emergency codes...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Lock Detail Modal -->
+    <div id="lock-detail-modal" class="modal-overlay">
+        <div class="modal" style="max-width: 600px;">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title" id="lock-detail-title">Lock Name</h3>
+                    <p style="font-size: 0.75rem; color: var(--text-secondary);" id="lock-detail-entity"></p>
+                </div>
+                <button class="modal-close" onclick="closeModal('lock-detail-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <h4 style="margin-bottom: 0.75rem; font-size: 0.875rem;">Code Slots</h4>
+                <div id="lock-detail-slots" class="code-slots">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('lock-detail-modal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Time Override Modal -->
+    <div id="time-override-modal" class="modal-overlay">
+        <div class="modal" style="max-width: 800px;">
+            <div class="modal-header">
+                <h3 class="modal-title">Set Time Override</h3>
+                <button class="modal-close" onclick="closeModal('time-override-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;" id="time-override-booking">
+                    <!-- Populated by JS -->
+                </p>
+                <input type="hidden" id="time-override-booking-id">
+
+                <div class="form-group">
+                    <label class="form-label">Notes (applies to all overrides)</label>
+                    <input type="text" id="time-override-notes" class="form-input"
+                        placeholder="e.g., Early check-in requested">
+                </div>
+
+                <div id="time-override-locks" style="margin-top: 1rem;">
+                    <!-- Populated by JS with per-lock time rows -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('time-override-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveAllTimeOverrides()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="static/js/app.js"></script>
+</body>
+</html>

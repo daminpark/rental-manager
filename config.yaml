@@ -1,0 +1,23 @@
+name: "Rental Manager"
+description: "Lock code manager for VBR rental properties"
+version: "0.1.0"
+slug: "rental_manager"
+url: "https://github.com/pierrepark/rental-manager"
+arch:
+  - amd64
+  - aarch64
+homeassistant_api: true
+ingress: true
+ingress_port: 8099
+panel_icon: "mdi:lock-smart"
+panel_title: "Rental Manager"
+options:
+  house_code: "195"
+  calendar_poll_interval: 120
+  code_sync_timeout_seconds: 120
+  code_sync_max_retries: 3
+schema:
+  house_code: str
+  calendar_poll_interval: int
+  code_sync_timeout_seconds: int
+  code_sync_max_retries: int
