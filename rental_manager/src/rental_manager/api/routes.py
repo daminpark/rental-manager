@@ -500,6 +500,18 @@ async def set_booking_code(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.post("/bookings/{booking_id}/recode")
+async def recode_booking(
+    booking_id: int,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Re-send codes to all locks for this booking (if within active window)."""
+    try:
+        return await manager.recode_booking(booking_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 # Unlock history endpoints
 
 

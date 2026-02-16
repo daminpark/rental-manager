@@ -380,6 +380,18 @@ function createBookingRow(booking, today) {
         });
         actionsCell.appendChild(codeBtn);
 
+        if (!booking.code_disabled && booking.code) {
+            const recodeBtn = document.createElement('button');
+            recodeBtn.className = 'btn btn-sm btn-primary';
+            recodeBtn.textContent = 'Recode';
+            recodeBtn.style.marginLeft = '0.25rem';
+            recodeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                recodeBooking(booking.id, booking.guest_name);
+            });
+            actionsCell.appendChild(recodeBtn);
+        }
+
         const toggleBtn = document.createElement('button');
         toggleBtn.className = booking.code_disabled
             ? 'btn btn-sm btn-success'
@@ -415,6 +427,33 @@ async function toggleBookingCode(bookingId, currentlyDisabled) {
         if (result.locks_activated) msg += ` (${result.locks_activated} lock(s) activated)`;
         if (result.locks_rescheduled) msg += ` (${result.locks_rescheduled} rescheduled)`;
         showToast(msg, 'success');
+        loadBookings();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function recodeBooking(bookingId, guestName) {
+    if (!confirm(`Re-send codes to all locks for ${guestName}? This will only work for locks currently within the active time window.`)) return;
+
+    try {
+        const result = await api(`/bookings/${bookingId}/recode`, {
+            method: 'POST',
+        });
+
+        if (result.status === 'disabled') {
+            showToast(result.message, 'warning');
+        } else if (result.status === 'no_code') {
+            showToast(result.message, 'warning');
+        } else if (result.status === 'outside_window') {
+            showToast(result.message, 'warning');
+        } else {
+            let msg = `Recoded ${result.locks_recoded} lock(s) for ${guestName}`;
+            if (result.locks_skipped) msg += ` (${result.locks_skipped} outside window)`;
+            if (result.errors && result.errors.length) msg += ` — ${result.errors.length} failed`;
+            showToast(msg, result.errors && result.errors.length ? 'warning' : 'success');
+        }
+
         loadBookings();
     } catch (error) {
         showToast(error.message, 'error');

@@ -1630,6 +1630,101 @@ class RentalManager:
             "locks_rescheduled": rescheduled_count,
         }
 
+    async def recode_booking(self, booking_id: int) -> dict:
+        """Re-send codes to all assigned locks for a booking.
+
+        Only works if the booking is within its active time window
+        (i.e. between activate_at and deactivate_at for at least one lock).
+        Skips disabled bookings and bookings with no code.
+        """
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Booking)
+                .options(
+                    selectinload(Booking.code_assignments)
+                    .joinedload(CodeAssignment.code_slot)
+                    .joinedload(CodeSlot.lock),
+                    selectinload(Booking.calendar),
+                )
+                .where(Booking.id == booking_id)
+            )
+            booking = result.scalar_one_or_none()
+            if not booking:
+                raise ValueError(f"Booking {booking_id} not found")
+
+            if booking.code_disabled:
+                return {
+                    "booking_id": booking_id,
+                    "status": "disabled",
+                    "message": "Cannot recode — booking code is disabled. Enable it first.",
+                }
+
+            code = booking.locked_code or generate_code_from_phone(booking.phone)
+            if not code:
+                return {
+                    "booking_id": booking_id,
+                    "status": "no_code",
+                    "message": "No code available (no phone number and no manual code set).",
+                }
+
+            now = datetime.utcnow()
+            recoded_count = 0
+            skipped_count = 0
+            errors = []
+
+            for assignment in booking.code_assignments:
+                lock = assignment.code_slot.lock
+                slot_num = assignment.code_slot.slot_number
+
+                if now >= assignment.activate_at and now < assignment.deactivate_at:
+                    # Within active window — re-set the code
+                    try:
+                        await self._set_code_with_retry(lock.entity_id, slot_num, code)
+                        assignment.is_active = True
+                        assignment.code = code
+                        recoded_count += 1
+                        logger.info(
+                            f"Recoded {lock.entity_id} slot {slot_num} "
+                            f"for booking {booking.guest_name}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to recode {lock.entity_id} slot {slot_num} "
+                            f"for booking {booking_id}: {e}"
+                        )
+                        errors.append(f"{lock.name} slot {slot_num}: {e}")
+                else:
+                    skipped_count += 1
+
+            if recoded_count == 0 and skipped_count > 0 and not errors:
+                return {
+                    "booking_id": booking_id,
+                    "status": "outside_window",
+                    "message": "No locks are within the active time window for this booking.",
+                }
+
+            session.add(AuditLog(
+                action="booking_recoded",
+                booking_id=booking.id,
+                code=code,
+                details=(
+                    f"Recoded {recoded_count} lock(s) for {booking.guest_name}"
+                    + (f", {len(errors)} failed" if errors else "")
+                    + (f", {skipped_count} outside window" if skipped_count else "")
+                ),
+                success=len(errors) == 0,
+                error_message="; ".join(errors) if errors else None,
+            ))
+            await session.commit()
+
+        return {
+            "booking_id": booking_id,
+            "status": "recoded",
+            "locks_recoded": recoded_count,
+            "locks_skipped": skipped_count,
+            "errors": errors,
+        }
+
     async def _backup_emergency_codes(self) -> None:
         """Backup emergency codes to Google Sheets."""
         try:
