@@ -16,8 +16,6 @@ RUN pip install --no-cache-dir .
 # Create data directory for SQLite database
 RUN mkdir -p /data
 
-# Copy run script
-COPY run.sh /run.sh
-RUN chmod +x /run.sh
-
-CMD ["/run.sh"]
+# Copy run script for s6-overlay
+COPY run.sh /etc/services.d/rental_manager/run
+RUN chmod +x /etc/services.d/rental_manager/run
