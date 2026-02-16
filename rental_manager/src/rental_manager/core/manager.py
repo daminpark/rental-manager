@@ -2326,7 +2326,7 @@ class RentalManager:
                     assignment_result = await session.execute(
                         select(CodeAssignment)
                         .join(CodeSlot)
-                        .joinedload(CodeAssignment.booking)
+                        .options(joinedload(CodeAssignment.booking))
                         .where(
                             CodeSlot.lock_id == lock.id,
                             CodeSlot.slot_number == code_slot,
