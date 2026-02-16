@@ -15,6 +15,7 @@ let state = {
     houseCode: '',
     currentView: 'locks',
     selectedLock: null,
+    lastSyncStatus: null,
 };
 
 // Utility: escape HTML for safe rendering
@@ -630,11 +631,7 @@ function renderSyncStatus(status) {
     const container = document.getElementById('sync-status');
     if (!container) return;
 
-    // Preserve activity log expanded state
-    const wasExpanded = container.querySelector('.activity-log') !== null;
-
     container.textContent = '';
-    container.style.cursor = 'pointer';
 
     const statusDiv = document.createElement('div');
     statusDiv.className = 'sync-status';
@@ -660,126 +657,184 @@ function renderSyncStatus(status) {
 
     statusDiv.appendChild(icon);
     statusDiv.appendChild(text);
-
-    const chevron = document.createElement('span');
-    chevron.className = 'activity-log-chevron';
-    chevron.textContent = '\u25BE';
-    chevron.style.cssText = 'margin-left:auto;font-size:0.7rem;color:var(--text-secondary);transition:transform 0.2s';
-    statusDiv.appendChild(chevron);
-
-    statusDiv.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleActivityLog(container, chevron);
-    });
-
     container.appendChild(statusDiv);
 
-    const hasFailedSlots = status.failed_slots && status.failed_slots.length > 0;
-    const hasFailedOps = status.failed_ops && status.failed_ops.length > 0;
-
-    if (hasFailedSlots || hasFailedOps) {
-        const failedDiv = document.createElement('div');
-        failedDiv.style.marginTop = '0.5rem';
-
-        // Retry all button (covers both slots and ops)
-        const retryAllBtn = document.createElement('button');
-        retryAllBtn.className = 'btn btn-sm btn-primary';
-        retryAllBtn.style.marginBottom = '0.5rem';
-        retryAllBtn.textContent = 'Retry All Failed';
-        retryAllBtn.addEventListener('click', retryAllFailed);
-        failedDiv.appendChild(retryAllBtn);
-
-        // Failed code slots
-        if (hasFailedSlots) {
-            status.failed_slots.forEach(slot => {
-                failedDiv.appendChild(renderFailedSlotRow(slot));
-            });
-        }
-
-        // Failed ops (auto-lock, lock/unlock)
-        if (hasFailedOps) {
-            status.failed_ops.forEach(op => {
-                failedDiv.appendChild(renderFailedOpRow(op));
-            });
-        }
-
-        container.appendChild(failedDiv);
-    }
-
-    // Restore expanded state
-    if (wasExpanded) {
-        loadActivityLog(container, chevron);
-    }
+    // Cache sync status for the activity view
+    state.lastSyncStatus = status;
 }
 
-function toggleActivityLog(container, chevron) {
-    const existing = container.querySelector('.activity-log');
-    if (existing) {
-        existing.remove();
-        chevron.style.transform = '';
-        return;
+// Activity View (full page)
+async function loadActivityView() {
+    const content = document.getElementById('activity-log-content');
+    const failedSection = document.getElementById('activity-failed-section');
+    if (!content) return;
+
+    content.innerHTML = '<div class="loading"><div class="spinner"></div>Loading activity...</div>';
+    failedSection.textContent = '';
+
+    // Render failed items from cached sync status
+    const status = state.lastSyncStatus;
+    if (status) {
+        const hasFailedSlots = status.failed_slots && status.failed_slots.length > 0;
+        const hasFailedOps = status.failed_ops && status.failed_ops.length > 0;
+
+        if (hasFailedSlots || hasFailedOps) {
+            const failedCard = document.createElement('div');
+            failedCard.className = 'card';
+            failedCard.style.marginBottom = '1rem';
+
+            const failedHeader = document.createElement('div');
+            failedHeader.className = 'card-header';
+            failedHeader.innerHTML = '<span class="card-title" style="color:var(--accent-red)">Failed Operations</span>';
+            failedCard.appendChild(failedHeader);
+
+            const failedBody = document.createElement('div');
+            failedBody.style.padding = '0.75rem';
+
+            const retryAllBtn = document.createElement('button');
+            retryAllBtn.className = 'btn btn-sm btn-primary';
+            retryAllBtn.style.marginBottom = '0.5rem';
+            retryAllBtn.textContent = 'Retry All Failed';
+            retryAllBtn.addEventListener('click', retryAllFailed);
+            failedBody.appendChild(retryAllBtn);
+
+            if (hasFailedSlots) {
+                status.failed_slots.forEach(slot => {
+                    failedBody.appendChild(renderFailedSlotRow(slot));
+                });
+            }
+            if (hasFailedOps) {
+                status.failed_ops.forEach(op => {
+                    failedBody.appendChild(renderFailedOpRow(op));
+                });
+            }
+
+            failedCard.appendChild(failedBody);
+            failedSection.appendChild(failedCard);
+        }
     }
-    chevron.style.transform = 'rotate(180deg)';
-    loadActivityLog(container, chevron);
-}
 
-async function loadActivityLog(container, chevron) {
-    // Remove existing if any
-    const existing = container.querySelector('.activity-log');
-    if (existing) existing.remove();
-
-    chevron.style.transform = 'rotate(180deg)';
-
-    const logDiv = document.createElement('div');
-    logDiv.className = 'activity-log';
-    logDiv.style.cssText = 'margin-top:0.5rem;max-height:300px;overflow-y:auto;font-size:0.7rem;border-top:1px solid var(--border-color, #e0e0e0);padding-top:0.4rem';
-
-    const loadingSpan = document.createElement('span');
-    loadingSpan.style.color = 'var(--text-secondary)';
-    loadingSpan.textContent = 'Loading...';
-    logDiv.appendChild(loadingSpan);
-    container.appendChild(logDiv);
-
+    // Load audit log
     try {
-        const logs = await api('/audit-log?limit=30');
-        logDiv.textContent = '';
+        const allLogs = await api('/audit-log?limit=150');
+        // Filter to code and auto-lock actions only (skip lock/unlock)
+        const logs = allLogs.filter(l =>
+            l.action !== 'lock_lock' && l.action !== 'lock_unlock'
+        ).slice(0, 100);
+        content.textContent = '';
 
         if (logs.length === 0) {
-            const empty = document.createElement('div');
-            empty.style.cssText = 'color:var(--text-secondary);padding:0.25rem 0';
-            empty.textContent = 'No activity yet';
-            logDiv.appendChild(empty);
+            content.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-secondary)">No activity yet</div>';
             return;
         }
 
+        const table = document.createElement('table');
+        table.className = 'activity-table';
+        table.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.82rem';
+
+        // Header
+        const thead = document.createElement('thead');
+        thead.innerHTML = `<tr>
+            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600;white-space:nowrap">Time</th>
+            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Action</th>
+            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Lock</th>
+            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Details</th>
+            <th style="text-align:center;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Status</th>
+        </tr>`;
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
         logs.forEach(log => {
-            const row = document.createElement('div');
-            row.style.cssText = 'padding:0.2rem 0;border-bottom:1px solid var(--border-color, rgba(0,0,0,0.05));display:flex;gap:0.4rem;align-items:baseline';
-
-            const time = document.createElement('span');
-            time.style.cssText = 'color:var(--text-secondary);white-space:nowrap;min-width:3.5rem';
-            const d = new Date(log.timestamp);
-            time.textContent = formatActivityTime(d);
-
-            const action = document.createElement('span');
-            action.style.cssText = 'flex:1;word-break:break-word';
-            action.textContent = formatAuditAction(log);
-
+            const tr = document.createElement('tr');
+            tr.style.cssText = 'border-bottom:1px solid var(--border-color,rgba(0,0,0,0.06))';
             if (!log.success) {
-                action.style.color = 'var(--accent-red, #dc3545)';
+                tr.style.background = 'var(--danger-bg,rgba(220,53,69,0.05))';
             }
 
-            row.appendChild(time);
-            row.appendChild(action);
-            logDiv.appendChild(row);
+            const d = new Date(log.timestamp);
+
+            // Time cell
+            const tdTime = document.createElement('td');
+            tdTime.style.cssText = 'padding:0.4rem 0.75rem;white-space:nowrap;color:var(--text-secondary)';
+            tdTime.textContent = formatActivityTime(d);
+            tdTime.title = d.toLocaleString();
+
+            // Action cell
+            const tdAction = document.createElement('td');
+            tdAction.style.cssText = 'padding:0.4rem 0.75rem;font-weight:500';
+            const actionLabel = getActionLabel(log.action);
+            tdAction.textContent = actionLabel;
+
+            // Lock cell
+            const tdLock = document.createElement('td');
+            tdLock.style.cssText = 'padding:0.4rem 0.75rem';
+            if (log.lock_name) {
+                const lockText = log.lock_name.replace(/ Lock$/, '');
+                tdLock.textContent = lockText;
+                if (log.slot_number) {
+                    const slotSpan = document.createElement('span');
+                    slotSpan.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-left:0.25rem';
+                    slotSpan.textContent = `s${log.slot_number}`;
+                    tdLock.appendChild(slotSpan);
+                }
+            } else if (log.slot_number) {
+                tdLock.textContent = `Slot ${log.slot_number}`;
+            } else {
+                tdLock.style.color = 'var(--text-secondary)';
+                tdLock.textContent = '—';
+            }
+
+            // Details cell
+            const tdDetails = document.createElement('td');
+            tdDetails.style.cssText = 'padding:0.4rem 0.75rem;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+            tdDetails.textContent = log.details || (log.error_message ? log.error_message : '—');
+            if (log.details) tdDetails.title = log.details;
+
+            // Status cell
+            const tdStatus = document.createElement('td');
+            tdStatus.style.cssText = 'padding:0.4rem 0.75rem;text-align:center';
+            const statusDot = document.createElement('span');
+            statusDot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:${log.success ? 'var(--accent-green,#28a745)' : 'var(--accent-red,#dc3545)'}`;
+            tdStatus.appendChild(statusDot);
+
+            tr.appendChild(tdTime);
+            tr.appendChild(tdAction);
+            tr.appendChild(tdLock);
+            tr.appendChild(tdDetails);
+            tr.appendChild(tdStatus);
+            tbody.appendChild(tr);
         });
+
+        table.appendChild(tbody);
+        content.appendChild(table);
+
     } catch (err) {
-        logDiv.textContent = '';
-        const errorSpan = document.createElement('span');
-        errorSpan.style.color = 'var(--accent-red, #dc3545)';
-        errorSpan.textContent = 'Failed to load activity log';
-        logDiv.appendChild(errorSpan);
+        content.innerHTML = '<div style="padding:1rem;color:var(--accent-red,#dc3545)">Failed to load activity log</div>';
     }
+}
+
+function getActionLabel(action) {
+    const labels = {
+        'code_activated': 'Code Activated',
+        'code_deactivated': 'Code Deactivated',
+        'code_finalized': 'Code Finalized',
+        'code_sync_failed': 'Sync Failed',
+        'master_code_set': 'Master Code Set',
+        'emergency_code_randomized': 'Emergency Randomized',
+        'emergency_code_set': 'Emergency Code Set',
+        'clear_all_codes': 'All Codes Cleared',
+        'set_slot_code': 'Slot Code Set',
+        'clear_slot_code': 'Slot Code Cleared',
+        'code_disabled': 'Code Disabled',
+        'code_enabled': 'Code Enabled',
+        'booking_code_set': 'Booking Code Set',
+        'booking_recoded': 'Booking Recoded',
+        'auto_lock_changed': 'Auto-Lock Changed',
+        'auto_lock_enable': 'Auto-Lock Enabled',
+        'auto_lock_disable': 'Auto-Lock Disabled',
+        'no_code_warning': 'No Code Warning',
+    };
+    return labels[action] || action.replace(/_/g, ' ');
 }
 
 function formatActivityTime(d) {
@@ -787,7 +842,7 @@ function formatActivityTime(d) {
     const diffMs = now - d;
     const diffMins = Math.floor(diffMs / 60000);
 
-    if (diffMins < 1) return 'now';
+    if (diffMins < 1) return 'just now';
     if (diffMins < 60) return `${diffMins}m ago`;
 
     const diffHours = Math.floor(diffMins / 60);
@@ -797,49 +852,6 @@ function formatActivityTime(d) {
     if (diffDays < 7) return `${diffDays}d ago`;
 
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function formatAuditAction(log) {
-    const actionLabels = {
-        'code_activated': 'Activated',
-        'code_deactivated': 'Deactivated',
-        'code_finalized': 'Finalized',
-        'code_sync_failed': 'Sync failed',
-        'master_code_set': 'Master set',
-        'emergency_code_randomized': 'Emergency randomized',
-        'emergency_code_set': 'Emergency set',
-        'clear_all_codes': 'All cleared',
-        'set_slot_code': 'Slot set',
-        'clear_slot_code': 'Slot cleared',
-        'code_disabled': 'Disabled',
-        'code_enabled': 'Enabled',
-        'booking_code_set': 'Code set',
-        'booking_recoded': 'Recoded',
-        'auto_lock_changed': 'Auto-lock',
-        'no_code_warning': 'No code',
-    };
-
-    const label = actionLabels[log.action] || log.action.replace(/_/g, ' ');
-    const parts = [label];
-
-    // Add lock name if available
-    if (log.lock_name) {
-        // Shorten: "195 Front Lock" -> "195 Front"
-        const short = log.lock_name.replace(/ Lock$/, '');
-        parts.push(short);
-    }
-
-    // Add slot info
-    if (log.slot_number) {
-        parts.push(`s${log.slot_number}`);
-    }
-
-    // Add details if present (but skip if it duplicates lock name)
-    if (log.details && !log.details.includes(log.lock_name || '__none__')) {
-        parts.push(log.details);
-    }
-
-    return parts.join(' \u00B7 ');
 }
 
 function renderFailedSlotRow(slot) {
@@ -1834,6 +1846,7 @@ function setView(view) {
     if (view === 'bookings') loadBookings();
     if (view === 'calendars') loadCalendars();
     if (view === 'codes') loadCodesView();
+    if (view === 'activity') loadActivityView();
 }
 
 // Initialize

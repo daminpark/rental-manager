@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rental Manager</title>
-    <link rel="stylesheet" href="static/css/styles.css?v=0.3.3">
+    <link rel="stylesheet" href="static/css/styles.css?v=0.3.4">
 </head>
 <body>
     <div class="app-container">
@@ -42,7 +42,7 @@
 
                 <div class="nav-section">
                     <div class="nav-section-title">Status</div>
-                    <div id="sync-status" class="nav-item">
+                    <div id="sync-status" class="nav-item" data-view="activity">
                         <div class="sync-status">
                             <span class="sync-status-icon active"></span>
                             <span>Loading...</span>
@@ -107,6 +107,27 @@
                     <div class="loading">
                         <div class="spinner"></div>
                         Loading calendars...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Activity View -->
+            <div id="activity-view" class="view-content" style="display: none;">
+                <div class="page-header">
+                    <h2 class="page-title">Activity Log</h2>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary" onclick="loadActivityView()">Refresh</button>
+                    </div>
+                </div>
+
+                <div id="activity-failed-section"></div>
+
+                <div class="card">
+                    <div id="activity-log-content">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            Loading activity...
+                        </div>
                     </div>
                 </div>
             </div>
@@ -231,6 +252,6 @@
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="static/js/app.js?v=0.3.3"></script>
+    <script src="static/js/app.js?v=0.3.4"></script>
 </body>
 </html>
