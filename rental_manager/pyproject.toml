@@ -2,7 +2,7 @@
 name = "rental-manager"
 version = "0.1.0"
 description = "Rental property management system for 193 & 195 Vauxhall Bridge Road"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.27.0",
@@ -33,6 +33,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rental_manager"]
 
 [tool.ruff]
 line-length = 100
