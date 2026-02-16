@@ -11,7 +11,7 @@ export RENTAL_HA_URL="http://supervisor/core/api"
 export RENTAL_HA_TOKEN="${SUPERVISOR_TOKEN}"
 
 # Database in persistent /data directory
-export RENTAL_DATABASE_URL="sqlite+aiosqlite:///data/rental_manager.db"
+export RENTAL_DATABASE_URL="sqlite+aiosqlite:////data/rental_manager.db"
 
 bashio::log.info "Starting Rental Manager for house ${RENTAL_HOUSE_CODE}..."
 
