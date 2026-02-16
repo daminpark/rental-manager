@@ -542,7 +542,7 @@ function renderCalendars() {
         entityInput.type = 'text';
         entityInput.className = 'form-input';
         entityInput.value = cal.ha_entity_id || '';
-        entityInput.placeholder = 'calendar.195_room_1';
+        entityInput.placeholder = 'calendar.195_1_calendar';
         entityInput.id = `entity-${cal.calendar_id}`;
         entityInput.style.marginBottom = '0.5rem';
         inputDiv.appendChild(entityInput);
@@ -841,6 +841,33 @@ async function refreshCalendars() {
     }
 }
 
+async function syncCalendarsToHA() {
+    if (!confirm(
+        'Sync all calendar iCal URLs to Home Assistant remote_calendar integrations?\n\n'
+        + 'This will delete and re-create each remote_calendar config entry with the current URL. '
+        + 'Entity IDs will be preserved. This may take a minute.'
+    )) return;
+
+    showToast('Syncing calendars to HA... this may take a minute', 'info');
+
+    try {
+        const result = await api('/calendars/sync-to-ha', { method: 'POST' });
+        let msg = `Synced ${result.synced.length} calendar(s) to HA`;
+        if (result.created.length > 0) {
+            msg += `, ${result.created.length} newly created`;
+        }
+        if (result.errors.length > 0) {
+            msg += `, ${result.errors.length} error(s)`;
+            showToast(msg, 'error');
+        } else {
+            showToast(msg, 'success');
+        }
+        loadCalendars();
+    } catch (error) {
+        showToast('Sync failed: ' + error.message, 'error');
+    }
+}
+
 // Store the original lock times for comparison when saving
 let _originalLockTimes = [];
 
@@ -1049,6 +1076,7 @@ function showLockDetail(entityId) {
     document.getElementById('lock-detail-entity').textContent = lock.entity_id;
 
     renderLockDetailSlots(lock);
+    showLockTab('slots');
 
     const clearAllBtn = document.getElementById('clear-all-codes-btn');
     clearAllBtn.onclick = () => clearAllCodes(lock.entity_id);
@@ -1171,6 +1199,130 @@ async function refreshLockDetail(entityId) {
         renderLockDetailSlots(lock);
     }
     renderLocks();
+}
+
+function showLockTab(tab) {
+    const slotsTab = document.getElementById('lock-tab-slots');
+    const historyTab = document.getElementById('lock-tab-history');
+    const slotsBtn = document.getElementById('tab-slots-btn');
+    const historyBtn = document.getElementById('tab-history-btn');
+
+    if (tab === 'slots') {
+        slotsTab.style.display = '';
+        historyTab.style.display = 'none';
+        slotsBtn.className = 'btn btn-sm btn-primary';
+        historyBtn.className = 'btn btn-sm btn-secondary';
+    } else {
+        slotsTab.style.display = 'none';
+        historyTab.style.display = '';
+        slotsBtn.className = 'btn btn-sm btn-secondary';
+        historyBtn.className = 'btn btn-sm btn-primary';
+        if (state.selectedLock) {
+            loadUnlockHistory(state.selectedLock.entity_id);
+        }
+    }
+}
+
+async function loadUnlockHistory(lockEntityId) {
+    const container = document.getElementById('lock-history-content');
+    container.textContent = '';
+
+    const loading = document.createElement('div');
+    loading.className = 'loading';
+    const spinner = document.createElement('div');
+    spinner.className = 'spinner';
+    loading.appendChild(spinner);
+    loading.appendChild(document.createTextNode(' Loading history...'));
+    container.appendChild(loading);
+
+    try {
+        const events = await api(`/locks/${lockEntityId}/unlock-history?limit=50`);
+        container.textContent = '';
+
+        if (events.length === 0) {
+            const empty = document.createElement('p');
+            empty.textContent = 'No unlock events recorded yet.';
+            empty.style.color = 'var(--text-secondary)';
+            empty.style.textAlign = 'center';
+            empty.style.padding = '2rem';
+            container.appendChild(empty);
+            return;
+        }
+
+        const table = document.createElement('table');
+        table.style.width = '100%';
+        table.style.fontSize = '0.85rem';
+
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        ['Time', 'Guest', 'Slot', 'Method'].forEach(text => {
+            const th = document.createElement('th');
+            th.textContent = text;
+            th.style.textAlign = 'left';
+            th.style.padding = '0.4rem 0.5rem';
+            th.style.fontSize = '0.8rem';
+            headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        events.forEach(event => {
+            const row = document.createElement('tr');
+
+            const timeCell = document.createElement('td');
+            timeCell.style.padding = '0.4rem 0.5rem';
+            timeCell.style.whiteSpace = 'nowrap';
+            const d = new Date(event.timestamp);
+            timeCell.textContent = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
+                + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+            row.appendChild(timeCell);
+
+            const guestCell = document.createElement('td');
+            guestCell.style.padding = '0.4rem 0.5rem';
+            guestCell.textContent = event.guest_name || 'Unknown';
+            if (!event.guest_name) guestCell.style.color = 'var(--text-secondary)';
+            row.appendChild(guestCell);
+
+            const slotCell = document.createElement('td');
+            slotCell.style.padding = '0.4rem 0.5rem';
+            if (event.slot_number != null) {
+                slotCell.textContent = `#${event.slot_number}`;
+                const label = getSlotLabel(event.slot_number);
+                if (label) {
+                    const labelSpan = document.createElement('span');
+                    labelSpan.style.color = 'var(--text-secondary)';
+                    labelSpan.style.fontSize = '0.75rem';
+                    labelSpan.textContent = ` ${label}`;
+                    slotCell.appendChild(labelSpan);
+                }
+            } else {
+                slotCell.textContent = '---';
+                slotCell.style.color = 'var(--text-secondary)';
+            }
+            row.appendChild(slotCell);
+
+            const methodCell = document.createElement('td');
+            methodCell.style.padding = '0.4rem 0.5rem';
+            const methodBadge = document.createElement('span');
+            methodBadge.className = 'badge badge-info';
+            methodBadge.textContent = event.method;
+            methodBadge.style.fontSize = '0.7rem';
+            methodCell.appendChild(methodBadge);
+            row.appendChild(methodCell);
+
+            tbody.appendChild(row);
+        });
+
+        table.appendChild(tbody);
+        container.appendChild(table);
+    } catch (error) {
+        container.textContent = '';
+        const errMsg = document.createElement('p');
+        errMsg.textContent = 'Error loading history: ' + error.message;
+        errMsg.style.color = 'var(--accent-red)';
+        container.appendChild(errMsg);
+    }
 }
 
 function getSlotLabel(slotNumber) {

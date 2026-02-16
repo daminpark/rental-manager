@@ -39,6 +39,7 @@ from rental_manager.db.models import (
     Lock,
     LockCalendar,
     TimeOverride,
+    UnlockEvent,
 )
 from rental_manager.ha.client import HomeAssistantClient
 from rental_manager.scheduler.scheduler import CodeScheduler, CodeScheduleEntry
@@ -1539,6 +1540,142 @@ class RentalManager:
         except Exception as e:
             logger.error(f"Failed to backup emergency codes to Google Sheets: {e}")
 
+    async def sync_calendars_to_ha(self) -> dict:
+        """Sync calendar iCal URLs to HA remote_calendar config entries.
+
+        For each calendar that has an iCal URL, this will:
+        1. Find the existing remote_calendar config entry by matching the title
+        2. Delete it
+        3. Re-create it with the (possibly updated) URL
+        4. Rename the entity ID back if HA assigned a different one
+
+        Returns summary of what was synced.
+        """
+        async with get_session_context() as session:
+            result = await session.execute(select(Calendar))
+            calendars = result.scalars().all()
+
+        # Get existing remote_calendar config entries from HA
+        try:
+            existing_entries = await self._ha_client.get_config_entries("remote_calendar")
+        except Exception as e:
+            logger.error(f"Failed to get remote_calendar config entries: {e}")
+            return {"error": str(e), "synced": [], "errors": []}
+
+        # Build a map of title -> config entry for matching
+        entry_by_title: dict[str, dict] = {}
+        for entry in existing_entries:
+            entry_by_title[entry.get("title", "")] = entry
+
+        synced = []
+        errors = []
+        created = []
+
+        for calendar in calendars:
+            if not calendar.ical_url:
+                continue
+
+            expected_entity_id = calendar.ha_entity_id or f"calendar.{calendar.calendar_id}"
+            cal_name = calendar.name
+
+            try:
+                # Check if entry already exists (match by title)
+                existing = entry_by_title.get(cal_name)
+
+                if existing:
+                    # Delete the old entry
+                    entry_id = existing["entry_id"]
+                    logger.info(f"Deleting remote_calendar entry '{cal_name}' ({entry_id})")
+                    await self._ha_client.delete_config_entry(entry_id)
+                    await asyncio.sleep(1)  # Let HA settle
+
+                # Create new entry with updated URL
+                logger.info(f"Creating remote_calendar entry '{cal_name}' -> {calendar.ical_url[:60]}...")
+                flow_result = await self._ha_client.create_config_flow(
+                    handler="remote_calendar",
+                    data={
+                        "name": cal_name,
+                        "url": calendar.ical_url,
+                        "verify_ssl": True,
+                    },
+                )
+
+                if flow_result.get("type") == "create_entry":
+                    new_entry_id = flow_result.get("result", {}).get("entry_id", "")
+
+                    # Try to find and rename the entity if HA assigned a different entity_id
+                    await asyncio.sleep(2)  # Wait for entity to be created
+                    try:
+                        # List config entries again to find the new entity
+                        new_entries = await self._ha_client.get_config_entries("remote_calendar")
+                        new_entry = next(
+                            (e for e in new_entries if e.get("entry_id") == new_entry_id),
+                            None,
+                        )
+
+                        if new_entry:
+                            # Try to get the entity registry entry
+                            # The entity ID format for remote_calendar is typically calendar.{slugified_name}
+                            # We may need to rename it to match our expected entity_id
+                            try:
+                                entity_reg = await self._ha_client.get_entity_registry(expected_entity_id)
+                                # Entity already has the right ID
+                            except Exception:
+                                # Entity doesn't exist with expected ID; maybe it has a _2 suffix
+                                # Try common variants
+                                for suffix in ["_2", "_3", "_4"]:
+                                    try:
+                                        actual_entity_id = expected_entity_id + suffix
+                                        entity_reg = await self._ha_client.get_entity_registry(actual_entity_id)
+                                        # Found it with suffix; rename back
+                                        await self._ha_client.update_entity_registry(
+                                            actual_entity_id,
+                                            {"new_entity_id": expected_entity_id},
+                                        )
+                                        logger.info(
+                                            f"Renamed {actual_entity_id} -> {expected_entity_id}"
+                                        )
+                                        break
+                                    except Exception:
+                                        continue
+                    except Exception as e:
+                        logger.warning(f"Could not verify/rename entity for {cal_name}: {e}")
+
+                    action = "updated" if existing else "created"
+                    synced.append({
+                        "calendar_id": calendar.calendar_id,
+                        "name": cal_name,
+                        "action": action,
+                        "entry_id": new_entry_id,
+                    })
+                    if not existing:
+                        created.append(cal_name)
+                else:
+                    errors.append({
+                        "calendar_id": calendar.calendar_id,
+                        "error": f"Unexpected flow result: {flow_result.get('type')}",
+                    })
+
+            except Exception as e:
+                logger.error(f"Failed to sync calendar {cal_name} to HA: {e}")
+                errors.append({
+                    "calendar_id": calendar.calendar_id,
+                    "error": str(e),
+                })
+
+            # Stagger between calendars to avoid overwhelming HA
+            await asyncio.sleep(1)
+
+        logger.info(
+            f"Calendar sync to HA complete: {len(synced)} synced, "
+            f"{len(created)} created, {len(errors)} errors"
+        )
+        return {
+            "synced": synced,
+            "created": created,
+            "errors": errors,
+        }
+
     async def _upsert_time_override(
         self,
         session: AsyncSession,
@@ -1741,6 +1878,137 @@ class RentalManager:
                 for s in syncing
             ],
         }
+
+    async def record_unlock_event(
+        self,
+        entity_id: str,
+        code_slot: Optional[int] = None,
+        method: str = "unknown",
+        timestamp: Optional[datetime] = None,
+        raw_details: Optional[str] = None,
+    ) -> dict:
+        """Record a lock unlock event and correlate to a guest booking.
+
+        Called by the webhook endpoint when HA fires a lock unlock event.
+        """
+        import json as json_mod
+
+        ts = timestamp or datetime.utcnow()
+
+        async with get_session_context() as session:
+            # Look up lock
+            result = await session.execute(
+                select(Lock).where(Lock.entity_id == entity_id)
+            )
+            lock = result.scalar_one_or_none()
+            if not lock:
+                logger.warning(f"Unlock event for unknown lock: {entity_id}")
+                return {"error": f"Unknown lock: {entity_id}"}
+
+            # Correlate to a booking via CodeAssignment
+            booking_id = None
+            guest_name = None
+
+            if code_slot is not None:
+                if code_slot == MASTER_CODE_SLOT:
+                    guest_name = "Master Code"
+                elif code_slot == EMERGENCY_CODE_SLOT:
+                    guest_name = "Emergency Code"
+                else:
+                    # Find active CodeAssignment for this lock + slot
+                    assignment_result = await session.execute(
+                        select(CodeAssignment)
+                        .join(CodeSlot)
+                        .joinedload(CodeAssignment.booking)
+                        .where(
+                            CodeSlot.lock_id == lock.id,
+                            CodeSlot.slot_number == code_slot,
+                            CodeAssignment.is_active == True,
+                        )
+                    )
+                    assignment = assignment_result.scalar_one_or_none()
+                    if assignment and assignment.booking:
+                        booking_id = assignment.booking.id
+                        guest_name = assignment.booking.guest_name
+
+            event = UnlockEvent(
+                timestamp=ts,
+                lock_id=lock.id,
+                slot_number=code_slot,
+                booking_id=booking_id,
+                guest_name=guest_name,
+                method=method,
+                details=raw_details,
+            )
+            session.add(event)
+            await session.flush()
+
+            logger.info(
+                f"Unlock event recorded: {entity_id} slot={code_slot} "
+                f"guest={guest_name or 'unknown'} method={method}"
+            )
+
+            return {
+                "id": event.id,
+                "timestamp": event.timestamp.isoformat(),
+                "lock_entity_id": entity_id,
+                "lock_name": lock.name,
+                "slot_number": code_slot,
+                "booking_id": booking_id,
+                "guest_name": guest_name,
+                "method": method,
+            }
+
+    async def get_unlock_history(
+        self,
+        lock_entity_id: Optional[str] = None,
+        booking_id: Optional[int] = None,
+        from_date: Optional[date] = None,
+        to_date: Optional[date] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Get unlock event history, optionally filtered."""
+        async with get_session_context() as session:
+            query = (
+                select(UnlockEvent)
+                .join(Lock)
+                .order_by(UnlockEvent.timestamp.desc())
+            )
+
+            if lock_entity_id:
+                query = query.where(Lock.entity_id == lock_entity_id)
+            if booking_id:
+                query = query.where(UnlockEvent.booking_id == booking_id)
+            if from_date:
+                query = query.where(UnlockEvent.timestamp >= datetime.combine(from_date, time(0, 0)))
+            if to_date:
+                query = query.where(UnlockEvent.timestamp <= datetime.combine(to_date, time(23, 59, 59)))
+
+            query = query.offset(offset).limit(limit)
+            result = await session.execute(query)
+            events = result.scalars().all()
+
+            # We need lock names; load them
+            lock_ids = {e.lock_id for e in events}
+            lock_result = await session.execute(
+                select(Lock).where(Lock.id.in_(lock_ids))
+            )
+            lock_map = {l.id: l for l in lock_result.scalars().all()}
+
+            return [
+                {
+                    "id": e.id,
+                    "timestamp": e.timestamp.isoformat(),
+                    "lock_entity_id": lock_map[e.lock_id].entity_id if e.lock_id in lock_map else None,
+                    "lock_name": lock_map[e.lock_id].name if e.lock_id in lock_map else None,
+                    "slot_number": e.slot_number,
+                    "booking_id": e.booking_id,
+                    "guest_name": e.guest_name,
+                    "method": e.method,
+                }
+                for e in events
+            ]
 
     async def health_check(self) -> dict:
         """Perform a health check on all components."""

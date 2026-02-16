@@ -452,6 +452,17 @@ async def refresh_calendars(manager: RentalManager = Depends(get_manager)):
     return {"status": "refreshed"}
 
 
+@router.post("/calendars/sync-to-ha")
+async def sync_calendars_to_ha(manager: RentalManager = Depends(get_manager)):
+    """Sync calendar iCal URLs to HA remote_calendar config entries.
+
+    For each calendar with an iCal URL, this will delete the existing
+    remote_calendar config entry (if any) and re-create it with the
+    current URL. Entity IDs are preserved.
+    """
+    return await manager.sync_calendars_to_ha()
+
+
 @router.post("/bookings/{booking_id}/set-code")
 async def set_booking_code(
     booking_id: int,
@@ -465,6 +476,49 @@ async def set_booking_code(
         return await manager.set_booking_code(booking_id, request.code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# Unlock history endpoints
+
+
+@router.get("/unlock-history")
+async def get_unlock_history(
+    lock_entity_id: Optional[str] = Query(None, description="Filter by lock entity ID"),
+    booking_id: Optional[int] = Query(None, description="Filter by booking ID"),
+    from_date: Optional[date] = Query(None, description="Filter from date"),
+    to_date: Optional[date] = Query(None, description="Filter to date"),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0),
+    manager: RentalManager = Depends(get_manager),
+):
+    """Get unlock event history across all locks."""
+    return await manager.get_unlock_history(
+        lock_entity_id=lock_entity_id,
+        booking_id=booking_id,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/locks/{lock_entity_id}/unlock-history")
+async def get_lock_unlock_history(
+    lock_entity_id: str,
+    from_date: Optional[date] = Query(None, description="Filter from date"),
+    to_date: Optional[date] = Query(None, description="Filter to date"),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0),
+    manager: RentalManager = Depends(get_manager),
+):
+    """Get unlock event history for a specific lock."""
+    return await manager.get_unlock_history(
+        lock_entity_id=lock_entity_id,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # Audit log endpoint

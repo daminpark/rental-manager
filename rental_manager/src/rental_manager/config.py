@@ -228,26 +228,27 @@ def build_locks(house_code: str) -> list[LockConfig]:
 # Go to the Calendars view to set each calendar's iCal URL.
 
 # Calendar metadata keyed by calendar_id
-_CALENDAR_META: dict[str, tuple[str, CalendarType, list[int]]] = {
-    "195_room_1": ("195 Room 1", CalendarType.ROOM, [1]),
-    "195_room_2": ("195 Room 2", CalendarType.ROOM, [2]),
-    "195_room_3": ("195 Room 3", CalendarType.ROOM, [3]),
-    "195_room_4": ("195 Room 4", CalendarType.ROOM, [4]),
-    "195_room_5": ("195 Room 5", CalendarType.ROOM, [5]),
-    "195_room_6": ("195 Room 6", CalendarType.ROOM, [6]),
-    "195_suite_a": ("195 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2]),
-    "195_suite_b": ("195 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6]),
-    "195vbr": ("195 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6]),
-    "193_room_1": ("193 Room 1", CalendarType.ROOM, [1]),
-    "193_room_2": ("193 Room 2", CalendarType.ROOM, [2]),
-    "193_room_3": ("193 Room 3", CalendarType.ROOM, [3]),
-    "193_room_4": ("193 Room 4", CalendarType.ROOM, [4]),
-    "193_room_5": ("193 Room 5", CalendarType.ROOM, [5]),
-    "193_room_6": ("193 Room 6", CalendarType.ROOM, [6]),
-    "193_suite_a": ("193 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2]),
-    "193_suite_b": ("193 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6]),
-    "193vbr": ("193 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6]),
-    "193195vbr": ("193 & 195 Vauxhall Bridge Road (Both Houses)", CalendarType.BOTH_HOUSES, [1, 2, 3, 4, 5, 6]),
+# Tuple: (display_name, calendar_type, rooms, ha_entity_id)
+_CALENDAR_META: dict[str, tuple[str, CalendarType, list[int], str]] = {
+    "195_room_1": ("195 Room 1", CalendarType.ROOM, [1], "calendar.195_1_calendar"),
+    "195_room_2": ("195 Room 2", CalendarType.ROOM, [2], "calendar.195_2_calendar"),
+    "195_room_3": ("195 Room 3", CalendarType.ROOM, [3], "calendar.195_3_calendar"),
+    "195_room_4": ("195 Room 4", CalendarType.ROOM, [4], "calendar.195_4_calendar"),
+    "195_room_5": ("195 Room 5", CalendarType.ROOM, [5], "calendar.195_5_calendar"),
+    "195_room_6": ("195 Room 6", CalendarType.ROOM, [6], "calendar.195_6_calendar"),
+    "195_suite_a": ("195 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2], "calendar.195_a_calendar"),
+    "195_suite_b": ("195 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6], "calendar.195_b_calendar"),
+    "195vbr": ("195 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6], "calendar.195vbr_calendar"),
+    "193_room_1": ("193 Room 1", CalendarType.ROOM, [1], "calendar.193_1_calendar"),
+    "193_room_2": ("193 Room 2", CalendarType.ROOM, [2], "calendar.193_2_calendar"),
+    "193_room_3": ("193 Room 3", CalendarType.ROOM, [3], "calendar.193_3_calendar"),
+    "193_room_4": ("193 Room 4", CalendarType.ROOM, [4], "calendar.193_4_calendar"),
+    "193_room_5": ("193 Room 5", CalendarType.ROOM, [5], "calendar.193_5_calendar"),
+    "193_room_6": ("193 Room 6", CalendarType.ROOM, [6], "calendar.193_6_calendar"),
+    "193_suite_a": ("193 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2], "calendar.193_a_calendar"),
+    "193_suite_b": ("193 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6], "calendar.193_b_calendar"),
+    "193vbr": ("193 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6], "calendar.193vbr_calendar"),
+    "193195vbr": ("193 & 195 Vauxhall Bridge Road (Both Houses)", CalendarType.BOTH_HOUSES, [1, 2, 3, 4, 5, 6], "calendar.193195vbr_calendar"),
 }
 
 
@@ -257,15 +258,15 @@ def build_calendars(house_code: str) -> list[CalendarConfig]:
     Includes this house's individual room/suite/whole-house calendars
     plus the shared 193195vbr calendar.
 
-    HA entity IDs are auto-derived from the calendar_id using the
-    convention ``calendar.{calendar_id}`` (e.g. ``calendar.195_room_1``).
+    HA entity IDs use the naming convention from the actual HA instances
+    (e.g. ``calendar.195_1_calendar``, ``calendar.195_a_calendar``).
     """
     prefix = f"{house_code}_"
     whole_house_id = f"{house_code}vbr"
     both_houses_id = "193195vbr"
 
     calendars = []
-    for cal_id, (name, cal_type, rooms) in _CALENDAR_META.items():
+    for cal_id, (name, cal_type, rooms, ha_entity_id) in _CALENDAR_META.items():
         # Include calendars that belong to this house or the both-houses calendar
         if cal_id.startswith(prefix) or cal_id == whole_house_id or cal_id == both_houses_id:
             calendars.append(CalendarConfig(
@@ -273,7 +274,7 @@ def build_calendars(house_code: str) -> list[CalendarConfig]:
                 name=name,
                 calendar_type=cal_type,
                 ical_url="",
-                ha_entity_id=f"calendar.{cal_id}",
+                ha_entity_id=ha_entity_id,
                 rooms=rooms,
             ))
 

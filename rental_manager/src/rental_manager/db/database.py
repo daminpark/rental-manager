@@ -46,12 +46,14 @@ async def _run_migrations() -> None:
             except Exception:
                 pass  # Column already exists
 
-        # Backfill ha_entity_id for existing calendars using convention
+        # Backfill ha_entity_id for existing calendars using correct HA entity names
         try:
-            await conn.execute(text(
-                "UPDATE calendars SET ha_entity_id = 'calendar.' || calendar_id "
-                "WHERE ha_entity_id IS NULL"
-            ))
+            from rental_manager.config import _CALENDAR_META
+            for cal_id, (_, _, _, ha_entity_id) in _CALENDAR_META.items():
+                await conn.execute(text(
+                    "UPDATE calendars SET ha_entity_id = :ha_entity_id "
+                    "WHERE calendar_id = :cal_id AND (ha_entity_id IS NULL OR ha_entity_id = 'calendar.' || calendar_id)"
+                ), {"ha_entity_id": ha_entity_id, "cal_id": cal_id})
             logger.info("Backfilled ha_entity_id for existing calendars")
         except Exception:
             pass

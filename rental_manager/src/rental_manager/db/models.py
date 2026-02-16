@@ -75,6 +75,9 @@ class Lock(Base):
     lock_calendars: Mapped[list["LockCalendar"]] = relationship(
         "LockCalendar", back_populates="lock"
     )
+    unlock_events: Mapped[list["UnlockEvent"]] = relationship(
+        "UnlockEvent", back_populates="lock"
+    )
 
     __table_args__ = (UniqueConstraint("house_id", "entity_id", name="uq_lock_entity"),)
 
@@ -257,6 +260,27 @@ class AuditLog(Base):
 
     def __repr__(self) -> str:
         return f"<AuditLog {self.timestamp} {self.action}>"
+
+
+class UnlockEvent(Base):
+    """Record of a lock being unlocked, with guest correlation."""
+
+    __tablename__ = "unlock_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    lock_id: Mapped[int] = mapped_column(ForeignKey("locks.id"), index=True)
+    slot_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    booking_id: Mapped[Optional[int]] = mapped_column(ForeignKey("bookings.id"), nullable=True, index=True)
+    guest_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    method: Mapped[str] = mapped_column(String(50), default="unknown")  # keypad, manual, auto_lock, rf, unknown
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # raw event JSON
+
+    # Relationships
+    lock: Mapped["Lock"] = relationship("Lock", back_populates="unlock_events")
+
+    def __repr__(self) -> str:
+        return f"<UnlockEvent {self.timestamp} lock={self.lock_id} slot={self.slot_number}>"
 
 
 class EmergencyCodeShare(Base):

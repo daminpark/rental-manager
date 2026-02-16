@@ -314,6 +314,114 @@ class HomeAssistantClient:
         response.raise_for_status()
         return response.json()
 
+    # Config entries API (for managing integrations like remote_calendar)
+
+    async def get_config_entries(self, domain: str) -> list[dict[str, Any]]:
+        """Get all config entries for a domain.
+
+        Args:
+            domain: Integration domain (e.g., "remote_calendar")
+
+        Returns:
+            List of config entry dicts with keys: entry_id, domain, title, state, etc.
+        """
+        client = await self._get_client()
+        response = await client.get(
+            f"{self.url}/api/config/config_entries/entry",
+            params={"domain": domain},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def delete_config_entry(self, entry_id: str) -> dict[str, Any]:
+        """Delete a config entry.
+
+        Args:
+            entry_id: The config entry ID to delete
+
+        Returns:
+            Response dict with require_restart flag
+        """
+        client = await self._get_client()
+        response = await client.delete(
+            f"{self.url}/api/config/config_entries/entry/{entry_id}",
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def create_config_flow(
+        self, handler: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create a config entry via the config flow API.
+
+        This initiates a config flow and immediately submits the user step data.
+        Used for simple single-step integrations like remote_calendar.
+
+        Args:
+            handler: Integration handler name (e.g., "remote_calendar")
+            data: Config flow user step data (e.g., {"name": "...", "url": "...", "verify_ssl": True})
+
+        Returns:
+            Config flow result dict with type, flow_id, result, etc.
+        """
+        client = await self._get_client()
+
+        # Step 1: Initiate the config flow
+        init_response = await client.post(
+            f"{self.url}/api/config/config_entries/flow",
+            json={"handler": handler, "show_advanced_options": False},
+        )
+        init_response.raise_for_status()
+        flow = init_response.json()
+
+        flow_id = flow.get("flow_id")
+        if not flow_id:
+            return flow  # Already completed or errored
+
+        # Step 2: Submit the user step data
+        step_response = await client.post(
+            f"{self.url}/api/config/config_entries/flow/{flow_id}",
+            json=data,
+        )
+        step_response.raise_for_status()
+        return step_response.json()
+
+    async def get_entity_registry(self, entity_id: str) -> dict[str, Any]:
+        """Get entity registry entry for an entity.
+
+        Args:
+            entity_id: Entity ID (e.g., "calendar.195_room_1")
+
+        Returns:
+            Entity registry dict
+        """
+        client = await self._get_client()
+        response = await client.get(
+            f"{self.url}/api/config/entity_registry/{entity_id}",
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def update_entity_registry(
+        self, entity_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an entity registry entry (e.g., rename entity_id).
+
+        Args:
+            entity_id: Current entity ID
+            updates: Fields to update (e.g., {"new_entity_id": "calendar.my_name"})
+
+        Returns:
+            Updated entity registry dict
+        """
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.url}/api/config/entity_registry/{entity_id}",
+            json=updates,
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def health_check(self) -> bool:
         """Check if the Home Assistant instance is reachable.
 
