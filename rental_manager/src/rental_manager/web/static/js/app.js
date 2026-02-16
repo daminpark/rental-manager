@@ -1110,6 +1110,42 @@ function renderLockDetailSlots(lock) {
         topRow.appendChild(numDiv);
         topRow.appendChild(labelDiv);
 
+        // Show guest assignment info if present
+        if (slot.guest_name) {
+            const guestDiv = document.createElement('div');
+            guestDiv.style.fontSize = '0.7rem';
+            guestDiv.style.padding = '0.2rem 0.3rem';
+            guestDiv.style.marginBottom = '0.25rem';
+            guestDiv.style.borderRadius = '3px';
+            guestDiv.style.background = slot.is_active
+                ? 'var(--success-bg, rgba(40,167,69,0.1))'
+                : 'var(--warning-bg, rgba(255,193,7,0.1))';
+            guestDiv.style.border = `1px solid ${slot.is_active
+                ? 'var(--success-border, rgba(40,167,69,0.3))'
+                : 'var(--warning-border, rgba(255,193,7,0.3))'}`;
+
+            const nameSpan = document.createElement('div');
+            nameSpan.style.fontWeight = '600';
+            nameSpan.style.fontSize = '0.7rem';
+            nameSpan.textContent = slot.guest_name;
+            guestDiv.appendChild(nameSpan);
+
+            if (slot.check_in && slot.check_out) {
+                const dateSpan = document.createElement('div');
+                dateSpan.style.fontSize = '0.6rem';
+                dateSpan.style.color = 'var(--text-secondary)';
+                const ci = new Date(slot.check_in).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                const co = new Date(slot.check_out).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                dateSpan.textContent = `${ci} → ${co}`;
+                guestDiv.appendChild(dateSpan);
+            }
+
+            slotDiv.appendChild(topRow);
+            slotDiv.appendChild(guestDiv);
+        } else {
+            slotDiv.appendChild(topRow);
+        }
+
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'form-input';
@@ -1146,7 +1182,6 @@ function renderLockDetailSlots(lock) {
         btnRow.appendChild(setBtn);
         btnRow.appendChild(clearBtn);
 
-        slotDiv.appendChild(topRow);
         slotDiv.appendChild(input);
         slotDiv.appendChild(btnRow);
         slotsContainer.appendChild(slotDiv);

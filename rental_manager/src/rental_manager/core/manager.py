@@ -839,11 +839,54 @@ class RentalManager:
         async with get_session_context() as session:
             query = select(Lock).options(
                 selectinload(Lock.house),
-                selectinload(Lock.code_slots),
+                selectinload(Lock.code_slots).selectinload(
+                    CodeSlot.assignments
+                ).selectinload(
+                    CodeAssignment.booking
+                ).selectinload(Booking.calendar),
             )
 
             result = await session.execute(query)
             locks = result.scalars().all()
+
+            now = datetime.utcnow()
+
+            def _slot_info(slot: CodeSlot) -> dict:
+                info: dict = {
+                    "slot_number": slot.slot_number,
+                    "current_code": slot.current_code,
+                    "sync_state": slot.sync_state,
+                }
+                # Find the active or upcoming assignment for this slot
+                active = None
+                for a in slot.assignments:
+                    if a.is_active and a.booking:
+                        active = a
+                        break
+                # Fallback: find assignment whose time window covers now
+                if not active:
+                    for a in slot.assignments:
+                        if a.booking and a.activate_at <= now <= a.deactivate_at:
+                            active = a
+                            break
+                # Fallback: find the next upcoming assignment
+                if not active:
+                    upcoming = [
+                        a for a in slot.assignments
+                        if a.booking and a.activate_at > now
+                    ]
+                    if upcoming:
+                        active = min(upcoming, key=lambda a: a.activate_at)
+
+                if active and active.booking:
+                    b = active.booking
+                    info["guest_name"] = b.guest_name
+                    info["booking_id"] = b.id
+                    info["check_in"] = b.check_in_date.isoformat() if b.check_in_date else None
+                    info["check_out"] = b.check_out_date.isoformat() if b.check_out_date else None
+                    info["calendar_id"] = b.calendar.calendar_id if b.calendar else None
+                    info["is_active"] = active.is_active
+                return info
 
             return [
                 {
@@ -855,11 +898,7 @@ class RentalManager:
                     "master_code": lock.master_code,
                     "emergency_code": lock.emergency_code,
                     "slots": [
-                        {
-                            "slot_number": slot.slot_number,
-                            "current_code": slot.current_code,
-                            "sync_state": slot.sync_state,
-                        }
+                        _slot_info(slot)
                         for slot in sorted(lock.code_slots, key=lambda s: s.slot_number)
                     ],
                 }
@@ -1224,10 +1263,16 @@ class RentalManager:
     async def set_slot_code(
         self, lock_entity_id: str, slot_number: int, code: str
     ) -> dict:
-        """Set a code on a specific slot."""
+        """Set a code on a specific slot.
+
+        If the slot has an active CodeAssignment, the assignment's code is
+        also updated so the scheduler won't revert the manual override.
+        """
         async with get_session_context() as session:
             result = await session.execute(
-                select(Lock).options(selectinload(Lock.code_slots))
+                select(Lock).options(
+                    selectinload(Lock.code_slots).selectinload(CodeSlot.assignments)
+                )
                 .where(Lock.entity_id == lock_entity_id)
             )
             lock = result.scalar_one_or_none()
@@ -1247,6 +1292,20 @@ class RentalManager:
             slot = next((s for s in lock.code_slots if s.slot_number == slot_number), None)
             if slot:
                 slot.current_code = code if success else slot.current_code
+                # Also update any active assignment so the scheduler doesn't revert
+                if success:
+                    now = datetime.utcnow()
+                    for assignment in slot.assignments:
+                        if assignment.is_active or (
+                            assignment.activate_at <= now <= assignment.deactivate_at
+                        ):
+                            logger.info(
+                                f"Manual override on {lock.entity_id} slot {slot_number}: "
+                                f"updating assignment {assignment.id} code "
+                                f"{assignment.code} -> {code}"
+                            )
+                            assignment.code = code
+
             if slot_number == MASTER_CODE_SLOT and success:
                 lock.master_code = code
             elif slot_number == EMERGENCY_CODE_SLOT and success:
@@ -1259,6 +1318,9 @@ class RentalManager:
                 code=code,
                 success=success,
                 error_message=error_msg,
+                details="manual override" if slot and any(
+                    a.is_active for a in (slot.assignments if slot else [])
+                ) else None,
             ))
             await session.commit()
 
