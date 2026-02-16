@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 class RentalManager:
     """Main rental manager coordinating all operations."""
 
+    # Minimum gap between consecutive Z-Wave commands (seconds)
+    ZWAVE_CMD_DELAY = 2
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self._ical_fetcher = ICalFetcher()
@@ -59,6 +62,8 @@ class RentalManager:
         self._sync_manager: Optional[SyncManager] = None
         self._running = False
         self._polling = False
+        # Serializes all Z-Wave commands so only one is in flight at a time
+        self._zwave_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         """Initialize the manager and all components."""
@@ -233,12 +238,24 @@ class RentalManager:
     async def _ha_set_code(
         self, lock_entity_id: str, slot_number: int, code: str
     ) -> None:
-        """Set a code on a lock via Home Assistant."""
-        await self._ha_client.set_lock_usercode(lock_entity_id, slot_number, code)
+        """Set a code on a lock via Home Assistant.
+
+        Serialized through _zwave_lock so only one Z-Wave command runs at a
+        time, with a small delay between commands to avoid network congestion.
+        """
+        async with self._zwave_lock:
+            await self._ha_client.set_lock_usercode(lock_entity_id, slot_number, code)
+            await asyncio.sleep(self.ZWAVE_CMD_DELAY)
 
     async def _ha_clear_code(self, lock_entity_id: str, slot_number: int) -> None:
-        """Clear a code from a lock via Home Assistant."""
-        await self._ha_client.clear_lock_usercode(lock_entity_id, slot_number)
+        """Clear a code from a lock via Home Assistant.
+
+        Serialized through _zwave_lock so only one Z-Wave command runs at a
+        time, with a small delay between commands to avoid network congestion.
+        """
+        async with self._zwave_lock:
+            await self._ha_client.clear_lock_usercode(lock_entity_id, slot_number)
+            await asyncio.sleep(self.ZWAVE_CMD_DELAY)
 
     async def _ha_ping_lock(self, lock_entity_id: str) -> bool:
         """Ping a lock via Home Assistant."""
@@ -1250,11 +1267,9 @@ class RentalManager:
     async def clear_all_codes(self, lock_entity_id: str) -> dict:
         """Clear ALL code slots (1-20) on a lock. For setup use.
 
-        Processes slots sequentially with a 2-second delay between each
-        to avoid overwhelming the Z-Wave network.
+        Each call to _ha_clear_code is serialized through the Z-Wave command
+        lock with a built-in delay, so no additional stagger is needed here.
         """
-        SLOT_DELAY = 2  # seconds between each clear
-
         async with get_session_context() as session:
             result = await session.execute(
                 select(Lock).options(selectinload(Lock.code_slots))
@@ -1276,10 +1291,6 @@ class RentalManager:
                         f"Failed to clear slot {slot_num} on {lock.entity_id}: {e}"
                     )
                     errors.append(f"Slot {slot_num}: {e}")
-
-                # Stagger between slots (skip delay after the last one)
-                if slot_num < 20:
-                    await asyncio.sleep(SLOT_DELAY)
 
             # Update DB
             lock.master_code = None
