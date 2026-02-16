@@ -1053,15 +1053,18 @@ class RentalManager:
             if not lock:
                 raise ValueError(f"Lock {lock_entity_id} not found")
 
-            cleared = 0
-            errors = []
-            for slot_num in range(1, 21):
+            # Fire all 20 clears concurrently to pipeline Z-Wave commands
+            async def _clear_one(slot_num: int) -> tuple[int, str | None]:
                 try:
                     await self._ha_clear_code(lock.entity_id, slot_num)
-                    cleared += 1
+                    return (slot_num, None)
                 except Exception as e:
-                    errors.append(f"Slot {slot_num}: {e}")
                     logger.error(f"Failed to clear slot {slot_num} on {lock.entity_id}: {e}")
+                    return (slot_num, f"Slot {slot_num}: {e}")
+
+            results = await asyncio.gather(*[_clear_one(s) for s in range(1, 21)])
+            errors = [err for _, err in results if err]
+            cleared = 20 - len(errors)
 
             # Update DB
             lock.master_code = None
