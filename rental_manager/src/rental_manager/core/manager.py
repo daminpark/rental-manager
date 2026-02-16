@@ -25,7 +25,7 @@ from rental_manager.core.code_manager import (
     calculate_code_times,
     generate_code_from_phone,
 )
-from rental_manager.core.ical_parser import ICalFetcher, ParsedBooking
+from rental_manager.core.ical_parser import ICalFetcher, ParsedBooking, parse_ha_calendar_events
 from rental_manager.core.sync_manager import SyncManager, SyncState
 from rental_manager.db.database import get_session_context
 from rental_manager.db.models import (
@@ -186,6 +186,7 @@ class RentalManager:
                 name=cal_config.name,
                 calendar_type=cal_config.calendar_type.value,
                 ical_url=saved_urls.get(cal_config.calendar_id, cal_config.ical_url),
+                ha_entity_id=cal_config.ha_entity_id or None,
             )
             session.add(cal)
             calendar_map[cal_config.calendar_id] = cal
@@ -473,9 +474,9 @@ class RentalManager:
 
             # Re-fetch the calendar to get latest data
             calendar = booking.calendar
-            if calendar.ical_url:
-                try:
-                    parsed_bookings = await self._ical_fetcher.fetch_and_parse(calendar.ical_url)
+            try:
+                parsed_bookings = await self._fetch_calendar_bookings(calendar)
+                if parsed_bookings:
                     # Find this booking in the fresh data
                     for parsed in parsed_bookings:
                         if parsed.uid == booking_uid:
@@ -486,9 +487,9 @@ class RentalManager:
                                 )
                                 booking.phone = parsed.phone
                             break
-                except Exception as e:
-                    logger.error(f"Error re-fetching calendar for finalization: {e}")
-                    # Continue with existing phone number
+            except Exception as e:
+                logger.error(f"Error re-fetching calendar for finalization: {e}")
+                # Continue with existing phone number
 
             # Generate and lock the code
             code = generate_code_from_phone(booking.phone)
@@ -520,7 +521,11 @@ class RentalManager:
         )
 
     async def _poll_calendars(self) -> None:
-        """Poll all calendars for updates."""
+        """Poll all calendars for updates.
+
+        For each calendar, tries the HA calendar entity first (if configured),
+        then falls back to the iCal URL.
+        """
         if self._polling:
             logger.info("Calendar poll already in progress, skipping")
             return
@@ -533,13 +538,10 @@ class RentalManager:
             calendars = result.scalars().all()
 
             for calendar in calendars:
-                if not calendar.ical_url:
-                    continue
-
                 try:
-                    bookings = await self._ical_fetcher.fetch_and_parse(
-                        calendar.ical_url
-                    )
+                    bookings = await self._fetch_calendar_bookings(calendar)
+                    if bookings is None:
+                        continue  # No source configured
                     await self._process_calendar_bookings(session, calendar, bookings)
                     calendar.last_fetched = datetime.utcnow()
                     calendar.last_fetch_error = None
@@ -554,6 +556,31 @@ class RentalManager:
 
         self._polling = False
         logger.info("Calendar poll complete")
+
+    async def _fetch_calendar_bookings(
+        self, calendar: Calendar
+    ) -> list[ParsedBooking] | None:
+        """Fetch bookings from a calendar using HA entity or iCal URL.
+
+        Returns None if no source is configured.
+        """
+        # Try HA calendar entity first
+        if calendar.ha_entity_id:
+            try:
+                events = await self._ha_client.get_calendar_events(calendar.ha_entity_id)
+                return parse_ha_calendar_events(events)
+            except Exception as e:
+                logger.warning(
+                    f"HA calendar entity {calendar.ha_entity_id} failed: {e}, "
+                    f"falling back to iCal URL"
+                )
+                # Fall through to iCal URL
+
+        # Fall back to iCal URL
+        if calendar.ical_url:
+            return await self._ical_fetcher.fetch_and_parse(calendar.ical_url)
+
+        return None
 
     @staticmethod
     def _booking_match_key(guest_name: str, check_in: date, check_out: date) -> str:
@@ -1425,6 +1452,78 @@ class RentalManager:
             "locks_rescheduled": rescheduled_count,
         }
 
+    async def set_booking_code(self, booking_id: int, code: str) -> dict:
+        """Manually set (override) the PIN code for a booking.
+
+        Updates the locked_code on the booking and re-sets the code on all
+        currently active lock slots for this booking.
+        """
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Booking)
+                .options(
+                    selectinload(Booking.code_assignments)
+                    .joinedload(CodeAssignment.code_slot)
+                    .joinedload(CodeSlot.lock),
+                    selectinload(Booking.calendar),
+                )
+                .where(Booking.id == booking_id)
+            )
+            booking = result.scalar_one_or_none()
+            if not booking:
+                raise ValueError(f"Booking {booking_id} not found")
+
+            old_code = booking.locked_code or generate_code_from_phone(booking.phone)
+            booking.locked_code = code
+            booking.code_locked_at = datetime.utcnow()
+
+            updated_count = 0
+            rescheduled_count = 0
+            now = datetime.utcnow()
+
+            for assignment in booking.code_assignments:
+                lock = assignment.code_slot.lock
+                slot_num = assignment.code_slot.slot_number
+
+                # Update assignment code
+                assignment.code = code
+
+                if assignment.is_active and now < assignment.deactivate_at:
+                    # Currently active — re-set on lock immediately
+                    if not booking.code_disabled:
+                        try:
+                            await self._set_code_with_retry(lock.entity_id, slot_num, code)
+                            updated_count += 1
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to update code on {lock.entity_id} slot {slot_num} "
+                                f"for booking {booking_id}: {e}"
+                            )
+                elif not assignment.is_active and now < assignment.activate_at:
+                    # Future activation — reschedule with new code
+                    if self._scheduler and not booking.code_disabled:
+                        self._scheduler.reschedule_activation(
+                            lock.entity_id, slot_num, booking.uid,
+                            assignment.activate_at, code,
+                        )
+                        rescheduled_count += 1
+
+            session.add(AuditLog(
+                action="booking_code_set",
+                booking_id=booking.id,
+                code=code,
+                details=f"Manual code set for {booking.guest_name} (was: {old_code})",
+                success=True,
+            ))
+            await session.commit()
+
+        return {
+            "booking_id": booking_id,
+            "code": code,
+            "locks_updated": updated_count,
+            "locks_rescheduled": rescheduled_count,
+        }
+
     async def _backup_emergency_codes(self) -> None:
         """Backup emergency codes to Google Sheets."""
         try:
@@ -1440,6 +1539,43 @@ class RentalManager:
         except Exception as e:
             logger.error(f"Failed to backup emergency codes to Google Sheets: {e}")
 
+    async def _upsert_time_override(
+        self,
+        session: AsyncSession,
+        booking_id: int,
+        lock_id: int,
+        activate_at: Optional[datetime] = None,
+        deactivate_at: Optional[datetime] = None,
+        notes: Optional[str] = None,
+    ) -> TimeOverride:
+        """Create or update a time override for a single lock (internal helper)."""
+        result = await session.execute(
+            select(TimeOverride).where(
+                TimeOverride.booking_id == booking_id,
+                TimeOverride.lock_id == lock_id,
+            )
+        )
+        override = result.scalar_one_or_none()
+
+        if override:
+            if activate_at:
+                override.activate_at = activate_at
+            if deactivate_at:
+                override.deactivate_at = deactivate_at
+            if notes:
+                override.notes = notes
+        else:
+            override = TimeOverride(
+                booking_id=booking_id,
+                lock_id=lock_id,
+                activate_at=activate_at,
+                deactivate_at=deactivate_at,
+                notes=notes,
+            )
+            session.add(override)
+
+        return override
+
     async def set_time_override(
         self,
         booking_id: int,
@@ -1448,39 +1584,50 @@ class RentalManager:
         deactivate_at: Optional[datetime] = None,
         notes: Optional[str] = None,
     ) -> dict:
-        """Set a time override for a booking on a specific lock."""
+        """Set a time override for a booking on a specific lock.
+
+        If the lock is a room lock, bathroom locks for the same booking
+        are automatically updated to match (pegged timing).
+        """
         async with get_session_context() as session:
-            # Get or create override
-            result = await session.execute(
-                select(TimeOverride).where(
-                    TimeOverride.booking_id == booking_id,
-                    TimeOverride.lock_id == lock_id,
-                )
+            override = await self._upsert_time_override(
+                session, booking_id, lock_id, activate_at, deactivate_at, notes,
             )
-            override = result.scalar_one_or_none()
-
-            if override:
-                if activate_at:
-                    override.activate_at = activate_at
-                if deactivate_at:
-                    override.deactivate_at = deactivate_at
-                if notes:
-                    override.notes = notes
-            else:
-                override = TimeOverride(
-                    booking_id=booking_id,
-                    lock_id=lock_id,
-                    activate_at=activate_at,
-                    deactivate_at=deactivate_at,
-                    notes=notes,
-                )
-                session.add(override)
-
             await session.flush()
+
+            # If this is a room lock, sync bathroom locks to the same times
+            lock_result = await session.execute(select(Lock).where(Lock.id == lock_id))
+            target_lock = lock_result.scalar_one_or_none()
+
+            if target_lock and target_lock.lock_type == LockType.ROOM.value:
+                # Find bathroom locks that share a calendar with this booking
+                booking_result = await session.execute(
+                    select(Booking)
+                    .options(selectinload(Booking.calendar))
+                    .where(Booking.id == booking_id)
+                )
+                booking = booking_result.scalar_one_or_none()
+                if booking:
+                    bath_locks = await session.execute(
+                        select(Lock)
+                        .join(LockCalendar)
+                        .where(
+                            LockCalendar.calendar_id == booking.calendar.id,
+                            Lock.lock_type == LockType.BATHROOM.value,
+                        )
+                    )
+                    for bath_lock in bath_locks.scalars().all():
+                        await self._upsert_time_override(
+                            session, booking_id, bath_lock.id,
+                            activate_at, deactivate_at, notes,
+                        )
+                        logger.info(
+                            f"Synced bathroom lock {bath_lock.entity_id} override "
+                            f"to match room lock {target_lock.entity_id}"
+                        )
 
             # Reschedule if scheduler is running
             if self._scheduler:
-                # Get booking and lock details
                 booking_result = await session.execute(
                     select(Booking)
                     .options(selectinload(Booking.calendar))
@@ -1488,26 +1635,33 @@ class RentalManager:
                 )
                 booking = booking_result.scalar_one_or_none()
 
-                lock_result = await session.execute(
-                    select(Lock).where(Lock.id == lock_id)
-                )
-                lock = lock_result.scalar_one_or_none()
+                # Collect all locks to reschedule (target + synced bathrooms)
+                locks_to_reschedule = [target_lock] if target_lock else []
+                if target_lock and target_lock.lock_type == LockType.ROOM.value and booking:
+                    bath_result = await session.execute(
+                        select(Lock)
+                        .join(LockCalendar)
+                        .where(
+                            LockCalendar.calendar_id == booking.calendar.id,
+                            Lock.lock_type == LockType.BATHROOM.value,
+                        )
+                    )
+                    locks_to_reschedule.extend(bath_result.scalars().all())
 
-                if booking and lock and booking.phone:
+                if booking and booking.phone:
                     code = generate_code_from_phone(booking.phone)
                     slot_a, slot_b = get_slot_for_calendar(booking.calendar.calendar_id)
-                    # Use slot_a by default for overrides
                     slot_number = slot_a
 
-                    if code and activate_at:
-                        self._scheduler.reschedule_activation(
-                            lock.entity_id, slot_number, booking.uid, activate_at, code
-                        )
-
-                    if deactivate_at:
-                        self._scheduler.reschedule_deactivation(
-                            lock.entity_id, slot_number, booking.uid, deactivate_at
-                        )
+                    for lock in locks_to_reschedule:
+                        if code and activate_at:
+                            self._scheduler.reschedule_activation(
+                                lock.entity_id, slot_number, booking.uid, activate_at, code
+                            )
+                        if deactivate_at:
+                            self._scheduler.reschedule_deactivation(
+                                lock.entity_id, slot_number, booking.uid, deactivate_at
+                            )
 
             await session.commit()
 

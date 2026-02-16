@@ -36,6 +36,7 @@ async def _run_migrations() -> None:
     migrations = [
         "ALTER TABLE bookings ADD COLUMN code_disabled BOOLEAN DEFAULT 0",
         "ALTER TABLE bookings ADD COLUMN code_disabled_at DATETIME",
+        "ALTER TABLE calendars ADD COLUMN ha_entity_id VARCHAR(100)",
     ]
     async with engine.begin() as conn:
         for stmt in migrations:
@@ -44,6 +45,16 @@ async def _run_migrations() -> None:
                 logger.info("Migration applied: %s", stmt)
             except Exception:
                 pass  # Column already exists
+
+        # Backfill ha_entity_id for existing calendars using convention
+        try:
+            await conn.execute(text(
+                "UPDATE calendars SET ha_entity_id = 'calendar.' || calendar_id "
+                "WHERE ha_entity_id IS NULL"
+            ))
+            logger.info("Backfilled ha_entity_id for existing calendars")
+        except Exception:
+            pass
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

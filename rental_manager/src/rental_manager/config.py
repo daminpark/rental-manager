@@ -68,11 +68,11 @@ class DefaultTiming(BaseModel):
 # Default timings per lock type
 DEFAULT_TIMINGS: dict[LockType, DefaultTiming] = {
     LockType.ROOM: DefaultTiming(activate=time(12, 0), deactivate=time(11, 0)),
-    LockType.BATHROOM: DefaultTiming(activate=time(15, 0), deactivate=time(11, 0)),
+    LockType.BATHROOM: DefaultTiming(activate=time(12, 0), deactivate=time(11, 0)),  # Pegged to room timing
     LockType.KITCHEN: DefaultTiming(activate=time(15, 0), deactivate=time(11, 0)),
     LockType.FRONT: DefaultTiming(activate=time(11, 0), deactivate=time(14, 0)),
     LockType.BACK: DefaultTiming(activate=time(0, 0), deactivate=time(0, 0)),  # Master code only, no guest timing
-    LockType.STORAGE: DefaultTiming(activate=time(1, 0), deactivate=time(23, 59)),
+    LockType.STORAGE: DefaultTiming(activate=time(0, 1), deactivate=time(23, 59)),
 }
 
 
@@ -92,6 +92,7 @@ class CalendarConfig(BaseModel):
     name: str
     calendar_type: CalendarType
     ical_url: str
+    ha_entity_id: str = ""  # HA calendar entity ID (e.g., "calendar.195_room_1")
     rooms: list[int] = Field(default_factory=list)  # Room numbers included (for suites)
 
 
@@ -255,6 +256,9 @@ def build_calendars(house_code: str) -> list[CalendarConfig]:
 
     Includes this house's individual room/suite/whole-house calendars
     plus the shared 193195vbr calendar.
+
+    HA entity IDs are auto-derived from the calendar_id using the
+    convention ``calendar.{calendar_id}`` (e.g. ``calendar.195_room_1``).
     """
     prefix = f"{house_code}_"
     whole_house_id = f"{house_code}vbr"
@@ -269,6 +273,7 @@ def build_calendars(house_code: str) -> list[CalendarConfig]:
                 name=name,
                 calendar_type=cal_type,
                 ical_url="",
+                ha_entity_id=f"calendar.{cal_id}",
                 rooms=rooms,
             ))
 

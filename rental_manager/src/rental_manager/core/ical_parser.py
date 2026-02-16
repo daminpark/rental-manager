@@ -144,6 +144,65 @@ def parse_ical_feed(ical_content: str) -> list[ParsedBooking]:
     return bookings
 
 
+def parse_ha_calendar_events(events: list[dict]) -> list[ParsedBooking]:
+    """Parse events from the HA calendar API into ParsedBooking objects.
+
+    HA calendar API returns events like:
+    {
+        "start": {"date": "2026-02-20"} or {"dateTime": "2026-02-20T14:00:00+00:00"},
+        "end": {"date": "2026-02-22"} or {"dateTime": "..."},
+        "summary": "Guest Name",
+        "description": "Name: ... Phone: ... Channel: ...",
+        "uid": "abc123",
+    }
+    """
+    bookings: list[ParsedBooking] = []
+
+    for event in events:
+        summary = (event.get("summary") or "").strip()
+        description = event.get("description") or ""
+        uid = event.get("uid") or event.get("recurrence_id") or f"ha_{hash(summary + str(event.get('start')))}"
+
+        # Extract dates — HA can return date or dateTime
+        start_info = event.get("start", {})
+        end_info = event.get("end", {})
+
+        if "date" in start_info:
+            check_in_date = date.fromisoformat(start_info["date"])
+        elif "dateTime" in start_info:
+            check_in_date = datetime.fromisoformat(start_info["dateTime"]).date()
+        else:
+            continue
+
+        if "date" in end_info:
+            check_out_date = date.fromisoformat(end_info["date"])
+        elif "dateTime" in end_info:
+            check_out_date = datetime.fromisoformat(end_info["dateTime"]).date()
+        else:
+            continue
+
+        is_blocked = summary.lower() == "blocked" or not summary
+
+        if is_blocked:
+            bookings.append(ParsedBooking(
+                uid=uid, guest_name="Blocked",
+                phone=None, channel=None, reservation_id=None,
+                check_in_date=check_in_date, check_out_date=check_out_date,
+                is_blocked=True,
+            ))
+        else:
+            details = parse_description(description)
+            bookings.append(ParsedBooking(
+                uid=uid, guest_name=summary,
+                phone=details["phone"], channel=details["channel"],
+                reservation_id=details["reservation_id"],
+                check_in_date=check_in_date, check_out_date=check_out_date,
+                is_blocked=False,
+            ))
+
+    return bookings
+
+
 class ICalFetcher:
     """Fetches and parses iCal feeds."""
 

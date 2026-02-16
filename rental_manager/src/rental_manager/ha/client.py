@@ -1,6 +1,7 @@
 """Home Assistant API client."""
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any, Optional
 
 import httpx
@@ -280,6 +281,38 @@ class HomeAssistantClient:
             return True
         except Exception:
             return False
+
+    async def get_calendar_events(
+        self,
+        entity_id: str,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+    ) -> list[dict[str, Any]]:
+        """Get events from a Home Assistant calendar entity.
+
+        Args:
+            entity_id: Calendar entity ID (e.g., "calendar.195_room_1")
+            start: Start date (defaults to today - 30 days)
+            end: End date (defaults to today + 365 days)
+
+        Returns:
+            List of calendar event dicts with keys: summary, start, end, description, uid, etc.
+        """
+        if start is None:
+            start = date.today() - timedelta(days=30)
+        if end is None:
+            end = date.today() + timedelta(days=365)
+
+        client = await self._get_client()
+        response = await client.get(
+            f"{self.url}/api/calendars/{entity_id}",
+            params={
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+            },
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def health_check(self) -> bool:
         """Check if the Home Assistant instance is reachable.

@@ -67,6 +67,18 @@ class CalendarUrlRequest(BaseModel):
     ical_url: str
 
 
+class CalendarEntityRequest(BaseModel):
+    ha_entity_id: str
+
+
+class BulkCalendarUrlRequest(BaseModel):
+    urls: dict[str, str]  # calendar_id -> ical_url
+
+
+class BookingCodeRequest(BaseModel):
+    code: str
+
+
 # Health and status endpoints
 
 
@@ -325,6 +337,7 @@ async def get_calendars(manager: RentalManager = Depends(get_manager)):
                 "name": c.name,
                 "calendar_type": c.calendar_type,
                 "ical_url": c.ical_url,
+                "ha_entity_id": c.ha_entity_id,
                 "last_fetched": c.last_fetched.isoformat() if c.last_fetched else None,
                 "last_fetch_error": c.last_fetch_error,
             }
@@ -365,11 +378,93 @@ async def update_calendar_url(
         }
 
 
+@router.put("/calendars/{calendar_id}/entity")
+async def update_calendar_entity(
+    calendar_id: str,
+    request: CalendarEntityRequest,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Update the HA calendar entity ID for a calendar."""
+    from rental_manager.db.database import get_session_context
+    from rental_manager.db.models import Calendar
+    from sqlalchemy import select
+
+    async with get_session_context() as session:
+        result = await session.execute(
+            select(Calendar).where(Calendar.calendar_id == calendar_id)
+        )
+        calendar = result.scalar_one_or_none()
+        if not calendar:
+            raise HTTPException(status_code=404, detail="Calendar not found")
+
+        calendar.ha_entity_id = request.ha_entity_id or None
+        await session.commit()
+
+        return {
+            "calendar_id": calendar.calendar_id,
+            "ha_entity_id": calendar.ha_entity_id,
+        }
+
+
+@router.put("/calendars/bulk-urls")
+async def bulk_update_calendar_urls(
+    request: BulkCalendarUrlRequest,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Update multiple calendar iCal URLs at once."""
+    from rental_manager.db.database import get_session_context
+    from rental_manager.db.models import Calendar
+    from sqlalchemy import select
+
+    updated = []
+    not_found = []
+
+    async with get_session_context() as session:
+        for cal_id, url in request.urls.items():
+            result = await session.execute(
+                select(Calendar).where(Calendar.calendar_id == cal_id)
+            )
+            calendar = result.scalar_one_or_none()
+            if not calendar:
+                not_found.append(cal_id)
+                continue
+
+            calendar.ical_url = url
+            updated.append(cal_id)
+
+        await session.commit()
+
+        # Persist all URLs to file (survives DB wipe)
+        all_cals = await session.execute(select(Calendar))
+        urls = {c.calendar_id: c.ical_url for c in all_cals.scalars().all() if c.ical_url}
+        manager._save_calendar_urls(urls)
+
+    return {
+        "updated": updated,
+        "not_found": not_found,
+    }
+
+
 @router.post("/calendars/refresh")
 async def refresh_calendars(manager: RentalManager = Depends(get_manager)):
     """Manually trigger a calendar refresh."""
     await manager._poll_calendars()
     return {"status": "refreshed"}
+
+
+@router.post("/bookings/{booking_id}/set-code")
+async def set_booking_code(
+    booking_id: int,
+    request: BookingCodeRequest,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Manually set (override) the PIN code for a booking."""
+    if not request.code or not request.code.isdigit() or len(request.code) < 4:
+        raise HTTPException(status_code=400, detail="Code must be at least 4 digits")
+    try:
+        return await manager.set_booking_code(booking_id, request.code)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # Audit log endpoint

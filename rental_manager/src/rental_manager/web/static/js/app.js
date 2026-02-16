@@ -370,6 +370,16 @@ function createBookingRow(booking, today) {
     actionsCell.appendChild(timesBtn);
 
     if (!isPast) {
+        const codeBtn = document.createElement('button');
+        codeBtn.className = 'btn btn-sm btn-secondary';
+        codeBtn.textContent = 'Set Code';
+        codeBtn.style.marginLeft = '0.25rem';
+        codeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setBookingCode(booking.id);
+        });
+        actionsCell.appendChild(codeBtn);
+
         const toggleBtn = document.createElement('button');
         toggleBtn.className = booking.code_disabled
             ? 'btn btn-sm btn-success'
@@ -454,12 +464,25 @@ function renderCalendars() {
         title.className = 'card-title';
         title.textContent = cal.name;
 
+        const badgeWrap = document.createElement('div');
+        badgeWrap.style.display = 'flex';
+        badgeWrap.style.gap = '0.5rem';
+
+        if (cal.ha_entity_id) {
+            const haBadge = document.createElement('span');
+            haBadge.className = 'badge badge-success';
+            haBadge.textContent = 'HA Entity';
+            haBadge.style.fontSize = '0.7rem';
+            badgeWrap.appendChild(haBadge);
+        }
+
         const badge = document.createElement('span');
         badge.className = cal.last_fetch_error ? 'badge badge-danger' : 'badge badge-success';
         badge.textContent = cal.last_fetch_error ? 'Error' : 'OK';
+        badgeWrap.appendChild(badge);
 
         header.appendChild(title);
-        header.appendChild(badge);
+        header.appendChild(badgeWrap);
 
         const info = document.createElement('div');
         info.style.fontSize = '0.875rem';
@@ -478,6 +501,15 @@ function renderCalendars() {
         typeP.appendChild(typeStrong);
         typeP.appendChild(document.createTextNode(cal.calendar_type));
         info.appendChild(typeP);
+
+        if (cal.ha_entity_id) {
+            const entityP = document.createElement('p');
+            const entityStrong = document.createElement('strong');
+            entityStrong.textContent = 'HA Entity: ';
+            entityP.appendChild(entityStrong);
+            entityP.appendChild(document.createTextNode(cal.ha_entity_id));
+            info.appendChild(entityP);
+        }
 
         const fetchedP = document.createElement('p');
         const fetchedStrong = document.createElement('strong');
@@ -499,20 +531,49 @@ function renderCalendars() {
         const inputDiv = document.createElement('div');
         inputDiv.style.marginTop = '0.75rem';
 
+        // HA Entity ID input
+        const entityLabel = document.createElement('label');
+        entityLabel.className = 'form-label';
+        entityLabel.textContent = 'HA Calendar Entity';
+        entityLabel.style.fontSize = '0.8rem';
+        inputDiv.appendChild(entityLabel);
+
+        const entityInput = document.createElement('input');
+        entityInput.type = 'text';
+        entityInput.className = 'form-input';
+        entityInput.value = cal.ha_entity_id || '';
+        entityInput.placeholder = 'calendar.195_room_1';
+        entityInput.id = `entity-${cal.calendar_id}`;
+        entityInput.style.marginBottom = '0.5rem';
+        inputDiv.appendChild(entityInput);
+
+        const entityBtn = document.createElement('button');
+        entityBtn.className = 'btn btn-sm btn-primary';
+        entityBtn.textContent = 'Save Entity';
+        entityBtn.style.marginBottom = '0.75rem';
+        entityBtn.addEventListener('click', () => updateCalendarEntity(cal.calendar_id));
+        inputDiv.appendChild(entityBtn);
+
+        // iCal URL input (fallback)
+        const urlLabel = document.createElement('label');
+        urlLabel.className = 'form-label';
+        urlLabel.textContent = 'iCal URL (fallback)';
+        urlLabel.style.fontSize = '0.8rem';
+        inputDiv.appendChild(urlLabel);
+
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'form-input';
         input.value = cal.ical_url || '';
         input.placeholder = 'iCal URL';
         input.id = `url-${cal.calendar_id}`;
+        inputDiv.appendChild(input);
 
         const updateBtn = document.createElement('button');
         updateBtn.className = 'btn btn-sm btn-primary';
         updateBtn.style.marginTop = '0.5rem';
         updateBtn.textContent = 'Update URL';
         updateBtn.addEventListener('click', () => updateCalendarUrl(cal.calendar_id));
-
-        inputDiv.appendChild(input);
         inputDiv.appendChild(updateBtn);
 
         card.appendChild(header);
@@ -712,6 +773,43 @@ async function saveEmergencyCode(lockId, code) {
         });
         showToast('Emergency code saved', 'success');
         loadLocks();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function updateCalendarEntity(calendarId) {
+    const entityId = document.getElementById(`entity-${calendarId}`).value.trim();
+
+    try {
+        await api(`/calendars/${calendarId}/entity`, {
+            method: 'PUT',
+            body: JSON.stringify({ ha_entity_id: entityId }),
+        });
+        showToast('Calendar entity updated', 'success');
+        loadCalendars();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function setBookingCode(bookingId) {
+    const code = prompt('Enter new 4-digit PIN code for this guest:');
+    if (!code) return;
+    if (!/^\d{4,8}$/.test(code)) {
+        showToast('Code must be 4-8 digits', 'error');
+        return;
+    }
+    try {
+        const result = await api(`/bookings/${bookingId}/set-code`, {
+            method: 'POST',
+            body: JSON.stringify({ code }),
+        });
+        let msg = `Code set to ${code}`;
+        if (result.locks_updated) msg += ` (${result.locks_updated} lock(s) updated)`;
+        if (result.locks_rescheduled) msg += ` (${result.locks_rescheduled} rescheduled)`;
+        showToast(msg, 'success');
+        loadBookings();
     } catch (error) {
         showToast(error.message, 'error');
     }
