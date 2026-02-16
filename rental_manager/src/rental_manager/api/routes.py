@@ -58,12 +58,8 @@ class VolumeRequest(BaseModel):
     level: str  # "low", "high", or "off"
 
 
-class ManualCodeRequest(BaseModel):
-    slot_number: int
+class SlotCodeRequest(BaseModel):
     code: str
-    activate_at: Optional[datetime] = None
-    deactivate_at: Optional[datetime] = None
-    guest_name: Optional[str] = None
 
 
 class CalendarUrlRequest(BaseModel):
@@ -194,6 +190,45 @@ async def set_emergency_code(
     if len(request.code) != 4 or not request.code.isdigit():
         raise HTTPException(status_code=400, detail="Code must be 4 digits")
     return await manager.set_emergency_code(request.lock_id, request.code)
+
+
+# Slot management endpoints
+
+
+@router.post("/locks/{lock_entity_id}/clear-all-codes")
+async def clear_all_codes(
+    lock_entity_id: str,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Clear ALL code slots (1-20) on a lock. For setup use."""
+    return await manager.clear_all_codes(lock_entity_id)
+
+
+@router.post("/locks/{lock_entity_id}/slots/{slot_number}/set")
+async def set_slot_code(
+    lock_entity_id: str,
+    slot_number: int,
+    request: SlotCodeRequest,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Set a code on a specific slot."""
+    if slot_number < 1 or slot_number > 20:
+        raise HTTPException(status_code=400, detail="Slot must be 1-20")
+    if not request.code or not request.code.isdigit() or len(request.code) < 4:
+        raise HTTPException(status_code=400, detail="Code must be at least 4 digits")
+    return await manager.set_slot_code(lock_entity_id, slot_number, request.code)
+
+
+@router.post("/locks/{lock_entity_id}/slots/{slot_number}/clear")
+async def clear_slot_code(
+    lock_entity_id: str,
+    slot_number: int,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Clear a specific code slot."""
+    if slot_number < 1 or slot_number > 20:
+        raise HTTPException(status_code=400, detail="Slot must be 1-20")
+    return await manager.clear_slot_code(lock_entity_id, slot_number)
 
 
 # Booking endpoints

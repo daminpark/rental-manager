@@ -1042,6 +1042,145 @@ class RentalManager:
                 "emergency_code": code,
             }
 
+    async def clear_all_codes(self, lock_entity_id: str) -> dict:
+        """Clear ALL code slots (1-20) on a lock. For setup use."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
+            )
+            lock = result.scalar_one_or_none()
+            if not lock:
+                raise ValueError(f"Lock {lock_entity_id} not found")
+
+            cleared = 0
+            errors = []
+            for slot_num in range(1, 21):
+                try:
+                    await self._ha_clear_code(lock.entity_id, slot_num)
+                    cleared += 1
+                except Exception as e:
+                    errors.append(f"Slot {slot_num}: {e}")
+                    logger.error(f"Failed to clear slot {slot_num} on {lock.entity_id}: {e}")
+
+            # Update DB
+            lock.master_code = None
+            lock.emergency_code = None
+            for slot in lock.code_slots:
+                slot.current_code = None
+                slot.sync_state = CodeSyncState.IDLE.value
+
+            session.add(AuditLog(
+                action="clear_all_codes",
+                lock_id=lock.id,
+                success=len(errors) == 0,
+                error_message="; ".join(errors) if errors else None,
+                details=f"Cleared {cleared}/20 slots",
+            ))
+            await session.commit()
+
+            return {
+                "entity_id": lock.entity_id,
+                "cleared": cleared,
+                "errors": errors,
+            }
+
+    async def set_slot_code(
+        self, lock_entity_id: str, slot_number: int, code: str
+    ) -> dict:
+        """Set a code on a specific slot."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
+            )
+            lock = result.scalar_one_or_none()
+            if not lock:
+                raise ValueError(f"Lock {lock_entity_id} not found")
+
+            success = True
+            error_msg = None
+            try:
+                await self._set_code_with_retry(lock.entity_id, slot_number, code)
+            except Exception as e:
+                success = False
+                error_msg = str(e)
+                logger.error(f"Failed to set code on {lock.entity_id} slot {slot_number}: {e}")
+
+            # Update DB
+            slot = next((s for s in lock.code_slots if s.slot_number == slot_number), None)
+            if slot:
+                slot.current_code = code if success else slot.current_code
+            if slot_number == MASTER_CODE_SLOT and success:
+                lock.master_code = code
+            elif slot_number == EMERGENCY_CODE_SLOT and success:
+                lock.emergency_code = code
+
+            session.add(AuditLog(
+                action="set_slot_code",
+                lock_id=lock.id,
+                slot_number=slot_number,
+                code=code,
+                success=success,
+                error_message=error_msg,
+            ))
+            await session.commit()
+
+            if not success:
+                raise ValueError(f"Failed to set code: {error_msg}")
+
+            return {
+                "entity_id": lock.entity_id,
+                "slot_number": slot_number,
+                "code": code,
+            }
+
+    async def clear_slot_code(self, lock_entity_id: str, slot_number: int) -> dict:
+        """Clear a specific slot."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
+            )
+            lock = result.scalar_one_or_none()
+            if not lock:
+                raise ValueError(f"Lock {lock_entity_id} not found")
+
+            success = True
+            error_msg = None
+            try:
+                await self._ha_clear_code(lock.entity_id, slot_number)
+            except Exception as e:
+                success = False
+                error_msg = str(e)
+                logger.error(f"Failed to clear slot {slot_number} on {lock.entity_id}: {e}")
+
+            # Update DB
+            slot = next((s for s in lock.code_slots if s.slot_number == slot_number), None)
+            if slot and success:
+                slot.current_code = None
+            if slot_number == MASTER_CODE_SLOT and success:
+                lock.master_code = None
+            elif slot_number == EMERGENCY_CODE_SLOT and success:
+                lock.emergency_code = None
+
+            session.add(AuditLog(
+                action="clear_slot_code",
+                lock_id=lock.id,
+                slot_number=slot_number,
+                success=success,
+                error_message=error_msg,
+            ))
+            await session.commit()
+
+            if not success:
+                raise ValueError(f"Failed to clear slot: {error_msg}")
+
+            return {
+                "entity_id": lock.entity_id,
+                "slot_number": slot_number,
+            }
+
     async def set_time_override(
         self,
         booking_id: int,

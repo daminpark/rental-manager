@@ -898,6 +898,15 @@ function showLockDetail(entityId) {
     document.getElementById('lock-detail-title').textContent = lock.name;
     document.getElementById('lock-detail-entity').textContent = lock.entity_id;
 
+    renderLockDetailSlots(lock);
+
+    const clearAllBtn = document.getElementById('clear-all-codes-btn');
+    clearAllBtn.onclick = () => clearAllCodes(lock.entity_id);
+
+    showModal('lock-detail-modal');
+}
+
+function renderLockDetailSlots(lock) {
     const slotsContainer = document.getElementById('lock-detail-slots');
     slotsContainer.textContent = '';
 
@@ -905,26 +914,113 @@ function showLockDetail(entityId) {
         const slotDiv = document.createElement('div');
         slotDiv.className = `code-slot ${slot.current_code ? 'active' : 'empty'}`;
 
+        const topRow = document.createElement('div');
+        topRow.style.display = 'flex';
+        topRow.style.justifyContent = 'space-between';
+        topRow.style.alignItems = 'center';
+        topRow.style.marginBottom = '0.25rem';
+
         const numDiv = document.createElement('div');
         numDiv.className = 'code-slot-number';
         numDiv.textContent = slot.slot_number;
-
-        const codeDiv = document.createElement('div');
-        codeDiv.className = 'code-slot-code';
-        codeDiv.textContent = slot.current_code || '---';
 
         const labelDiv = document.createElement('div');
         labelDiv.style.fontSize = '0.625rem';
         labelDiv.style.color = 'var(--text-secondary)';
         labelDiv.textContent = getSlotLabel(slot.slot_number);
 
-        slotDiv.appendChild(numDiv);
-        slotDiv.appendChild(codeDiv);
-        slotDiv.appendChild(labelDiv);
+        topRow.appendChild(numDiv);
+        topRow.appendChild(labelDiv);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'form-input';
+        input.style.width = '100%';
+        input.style.fontSize = '0.9rem';
+        input.style.fontFamily = 'monospace';
+        input.style.textAlign = 'center';
+        input.style.padding = '0.2rem';
+        input.style.marginBottom = '0.25rem';
+        input.maxLength = 8;
+        input.value = slot.current_code || '';
+        input.placeholder = '----';
+
+        const btnRow = document.createElement('div');
+        btnRow.style.display = 'flex';
+        btnRow.style.gap = '0.25rem';
+
+        const setBtn = document.createElement('button');
+        setBtn.className = 'btn btn-sm btn-primary';
+        setBtn.style.flex = '1';
+        setBtn.style.fontSize = '0.7rem';
+        setBtn.style.padding = '0.15rem 0.3rem';
+        setBtn.textContent = 'Set';
+        setBtn.addEventListener('click', () => setSlotCode(lock.entity_id, slot.slot_number, input.value));
+
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'btn btn-sm btn-secondary';
+        clearBtn.style.flex = '1';
+        clearBtn.style.fontSize = '0.7rem';
+        clearBtn.style.padding = '0.15rem 0.3rem';
+        clearBtn.textContent = 'Clear';
+        clearBtn.addEventListener('click', () => clearSlotCode(lock.entity_id, slot.slot_number));
+
+        btnRow.appendChild(setBtn);
+        btnRow.appendChild(clearBtn);
+
+        slotDiv.appendChild(topRow);
+        slotDiv.appendChild(input);
+        slotDiv.appendChild(btnRow);
         slotsContainer.appendChild(slotDiv);
     });
+}
 
-    showModal('lock-detail-modal');
+async function setSlotCode(entityId, slotNumber, code) {
+    if (!code || !/^\d{4,8}$/.test(code)) {
+        showToast('Code must be 4-8 digits', 'error');
+        return;
+    }
+    try {
+        await api(`/locks/${entityId}/slots/${slotNumber}/set`, {
+            method: 'POST',
+            body: JSON.stringify({ code }),
+        });
+        showToast(`Slot ${slotNumber} code set`, 'success');
+        await refreshLockDetail(entityId);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function clearSlotCode(entityId, slotNumber) {
+    try {
+        await api(`/locks/${entityId}/slots/${slotNumber}/clear`, { method: 'POST' });
+        showToast(`Slot ${slotNumber} cleared`, 'success');
+        await refreshLockDetail(entityId);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function clearAllCodes(entityId) {
+    if (!confirm('Clear ALL codes (including master and emergency) on this lock?')) return;
+    try {
+        const result = await api(`/locks/${entityId}/clear-all-codes`, { method: 'POST' });
+        showToast(`Cleared ${result.cleared}/20 slots`, result.errors.length ? 'error' : 'success');
+        await refreshLockDetail(entityId);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function refreshLockDetail(entityId) {
+    state.locks = await api('/locks');
+    const lock = state.locks.find(l => l.entity_id === entityId);
+    if (lock) {
+        state.selectedLock = lock;
+        renderLockDetailSlots(lock);
+    }
+    renderLocks();
 }
 
 function getSlotLabel(slotNumber) {
