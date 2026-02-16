@@ -804,20 +804,21 @@ class RentalManager:
                 success=True,
             ))
 
-    async def _schedule_booking_codes(
-        self, session: AsyncSession, calendar: Calendar, booking: Booking
-    ) -> None:
-        """Schedule code activations for a booking."""
-        if booking.is_blocked:
-            return
-        if not booking.phone and not booking.locked_code:
-            return
+    async def _create_code_assignments(
+        self, session: AsyncSession, booking: Booking, code: str
+    ) -> list[CodeAssignment]:
+        """Create code assignments for a booking across all applicable locks.
 
-        # Use locked code if finalized, otherwise generate from current phone
-        code = booking.locked_code or generate_code_from_phone(booking.phone)
-        if not code:
-            logger.warning(f"Could not generate code for booking {booking.uid}")
-            return
+        Handles lock querying, time overrides, slot allocation, assignment
+        creation, and scheduler integration. Returns newly created assignments
+        with code_slot.lock relationships loaded.
+        """
+        calendar = booking.calendar
+        if not calendar:
+            logger.warning(
+                f"Booking {booking.id} has no calendar, cannot create assignments"
+            )
+            return []
 
         # Get locks that this calendar grants access to
         result = await session.execute(
@@ -831,6 +832,8 @@ class RentalManager:
             )
         )
         locks = result.unique().scalars().all()
+        new_assignments = []
+        now = datetime.utcnow()
 
         for lock in locks:
             lock_type = LockType(lock.lock_type)
@@ -844,7 +847,6 @@ class RentalManager:
             )
             override = override_result.scalar_one_or_none()
 
-            # Calculate activation/deactivation times
             activate_at, deactivate_at = calculate_code_times(
                 lock_type=lock_type,
                 check_in_date=booking.check_in_date,
@@ -854,14 +856,13 @@ class RentalManager:
                 override_deactivate=override.deactivate_at if override else None,
             )
 
-            # Allocate slot
+            # Allocate slot — use time window to find active occupants
             slot_a, slot_b = get_slot_for_calendar(calendar.calendar_id)
-
-            # Find available slot
             existing_assignments = [
                 a for slot in lock.code_slots
                 for a in slot.assignments
-                if slot.slot_number in (slot_a, slot_b) and a.is_active
+                if slot.slot_number in (slot_a, slot_b)
+                and a.activate_at <= now < a.deactivate_at
             ]
             existing_uids = {a.booking.uid for a in existing_assignments}
 
@@ -869,25 +870,23 @@ class RentalManager:
                 lock.entity_id, calendar.calendar_id, booking.uid, existing_uids
             )
 
-            # Find the code slot
             code_slot = next(
                 (s for s in lock.code_slots if s.slot_number == slot_number), None
             )
             if not code_slot:
                 continue
 
-            # Create or update assignment
             assignment = CodeAssignment(
                 code_slot_id=code_slot.id,
                 booking_id=booking.id,
                 code=code,
                 activate_at=activate_at,
                 deactivate_at=deactivate_at,
-                is_active=False,
+                is_active=activate_at <= now < deactivate_at,
             )
             session.add(assignment)
+            new_assignments.append(assignment)
 
-            # Schedule with scheduler
             if self._scheduler:
                 entry = CodeScheduleEntry(
                     lock_entity_id=lock.entity_id,
@@ -900,6 +899,42 @@ class RentalManager:
                     guest_name=booking.guest_name,
                 )
                 self._scheduler.schedule_code(entry)
+
+        if new_assignments:
+            await session.flush()
+            # Reload with code_slot.lock relationships for callers
+            ids = [a.id for a in new_assignments]
+            reloaded = await session.execute(
+                select(CodeAssignment)
+                .options(
+                    joinedload(CodeAssignment.code_slot)
+                    .joinedload(CodeSlot.lock)
+                )
+                .where(CodeAssignment.id.in_(ids))
+            )
+            new_assignments = reloaded.unique().scalars().all()
+            logger.info(
+                f"Created {len(new_assignments)} code assignments for booking "
+                f"{booking.guest_name} (id={booking.id})"
+            )
+
+        return new_assignments
+
+    async def _schedule_booking_codes(
+        self, session: AsyncSession, calendar: Calendar, booking: Booking
+    ) -> None:
+        """Schedule code activations for a booking (called during calendar sync)."""
+        if booking.is_blocked:
+            return
+        if not booking.phone and not booking.locked_code:
+            return
+
+        code = booking.locked_code or generate_code_from_phone(booking.phone)
+        if not code:
+            logger.warning(f"Could not generate code for booking {booking.uid}")
+            return
+
+        await self._create_code_assignments(session, booking, code)
 
     # Public API methods
 
@@ -935,7 +970,7 @@ class RentalManager:
                 # Fallback: find assignment whose time window covers now
                 if not active:
                     for a in slot.assignments:
-                        if a.booking and a.activate_at <= now <= a.deactivate_at:
+                        if a.booking and a.activate_at <= now < a.deactivate_at:
                             active = a
                             break
                 # Fallback: find the next upcoming assignment
@@ -1367,7 +1402,7 @@ class RentalManager:
                     now = datetime.utcnow()
                     for assignment in slot.assignments:
                         if assignment.is_active or (
-                            assignment.activate_at <= now <= assignment.deactivate_at
+                            assignment.activate_at <= now < assignment.deactivate_at
                         ):
                             logger.info(
                                 f"Manual override on {lock.entity_id} slot {slot_number}: "
@@ -1585,133 +1620,54 @@ class RentalManager:
             "locks_rescheduled": rescheduled_count,
         }
 
+    async def _load_booking_with_assignments(
+        self, session: AsyncSession, booking_id: int
+    ) -> Booking | None:
+        """Load a booking with code_assignments (including code_slot.lock) and calendar."""
+        result = await session.execute(
+            select(Booking)
+            .options(
+                selectinload(Booking.code_assignments)
+                .joinedload(CodeAssignment.code_slot)
+                .joinedload(CodeSlot.lock),
+                selectinload(Booking.calendar),
+            )
+            .where(Booking.id == booking_id)
+        )
+        return result.scalar_one_or_none()
+
     async def _ensure_code_assignments(
         self, session: AsyncSession, booking: Booking, code: str
     ) -> list[CodeAssignment]:
-        """Create code assignments for a booking if none exist.
+        """Create code assignments if none exist, then ensure they're loaded.
 
-        This handles the case where a booking had no phone number (so
-        _schedule_booking_codes skipped it) but later got a manual code set.
-        Returns the list of newly created assignments (empty if assignments
-        already existed).
+        After calling this, booking.code_assignments is guaranteed to be
+        populated with code_slot.lock relationships loaded.
         """
         if booking.code_assignments:
             return []
 
-        calendar = booking.calendar
-        if not calendar:
-            logger.warning(
-                f"Booking {booking.id} has no calendar, cannot create assignments"
-            )
-            return []
-
-        # Get locks that this calendar grants access to
-        result = await session.execute(
-            select(Lock)
-            .join(LockCalendar)
-            .where(LockCalendar.calendar_id == calendar.id)
-            .options(
-                selectinload(Lock.code_slots)
-                .selectinload(CodeSlot.assignments)
-                .joinedload(CodeAssignment.booking)
-            )
-        )
-        locks = result.unique().scalars().all()
-        new_assignments = []
-
-        for lock in locks:
-            lock_type = LockType(lock.lock_type)
-
-            # Check for time override
-            override_result = await session.execute(
-                select(TimeOverride).where(
-                    TimeOverride.booking_id == booking.id,
-                    TimeOverride.lock_id == lock.id,
-                )
-            )
-            override = override_result.scalar_one_or_none()
-
-            activate_at, deactivate_at = calculate_code_times(
-                lock_type=lock_type,
-                check_in_date=booking.check_in_date,
-                check_out_date=booking.check_out_date,
-                stagger_minutes=lock.stagger_minutes,
-                override_activate=override.activate_at if override else None,
-                override_deactivate=override.deactivate_at if override else None,
-            )
-
-            slot_a, slot_b = get_slot_for_calendar(calendar.calendar_id)
-            existing_assignments = [
-                a for slot in lock.code_slots
-                for a in slot.assignments
-                if slot.slot_number in (slot_a, slot_b) and a.is_active
-            ]
-            existing_uids = {a.booking.uid for a in existing_assignments}
-
-            slot_number = self._slot_allocator.allocate_slot_for_booking(
-                lock.entity_id, calendar.calendar_id, booking.uid, existing_uids
-            )
-
-            code_slot = next(
-                (s for s in lock.code_slots if s.slot_number == slot_number), None
-            )
-            if not code_slot:
-                continue
-
-            now = datetime.utcnow()
-            assignment = CodeAssignment(
-                code_slot_id=code_slot.id,
-                booking_id=booking.id,
-                code=code,
-                activate_at=activate_at,
-                deactivate_at=deactivate_at,
-                is_active=activate_at <= now < deactivate_at,
-            )
-            session.add(assignment)
-            new_assignments.append(assignment)
-
-            # Schedule future activation/deactivation
-            if self._scheduler:
-                entry = CodeScheduleEntry(
-                    lock_entity_id=lock.entity_id,
-                    slot_number=slot_number,
-                    code=code,
-                    activate_at=activate_at,
-                    deactivate_at=deactivate_at,
-                    booking_uid=booking.uid,
-                    calendar_id=calendar.calendar_id,
-                    guest_name=booking.guest_name,
-                )
-                self._scheduler.schedule_code(entry)
-
+        new_assignments = await self._create_code_assignments(session, booking, code)
         if new_assignments:
-            await session.flush()
-            logger.info(
-                f"Created {len(new_assignments)} code assignments for booking "
-                f"{booking.guest_name} (id={booking.id})"
-            )
-
+            # Refresh the collection so booking.code_assignments includes new ones
+            await session.refresh(booking, ["code_assignments"])
+            # The new assignments already have code_slot.lock loaded from
+            # _create_code_assignments, but the refresh replaces the collection
+            # with lazy proxies. Re-load them properly.
+            for a in booking.code_assignments:
+                await session.refresh(a, ["code_slot"])
+                await session.refresh(a.code_slot, ["lock"])
         return new_assignments
 
     async def set_booking_code(self, booking_id: int, code: str) -> dict:
         """Manually set (override) the PIN code for a booking.
 
         Updates the locked_code on the booking and re-sets the code on all
-        currently active lock slots for this booking. Creates code assignments
-        if none exist (e.g. booking had no phone number initially).
+        currently active lock slots. Creates code assignments if none exist
+        (e.g. booking had no phone number initially).
         """
         async with get_session_context() as session:
-            result = await session.execute(
-                select(Booking)
-                .options(
-                    selectinload(Booking.code_assignments)
-                    .joinedload(CodeAssignment.code_slot)
-                    .joinedload(CodeSlot.lock),
-                    selectinload(Booking.calendar),
-                )
-                .where(Booking.id == booking_id)
-            )
-            booking = result.scalar_one_or_none()
+            booking = await self._load_booking_with_assignments(session, booking_id)
             if not booking:
                 raise ValueError(f"Booking {booking_id} not found")
 
@@ -1719,14 +1675,7 @@ class RentalManager:
             booking.locked_code = code
             booking.code_locked_at = datetime.utcnow()
 
-            # Create code assignments if none exist
-            new_assignments = await self._ensure_code_assignments(session, booking, code)
-            # Reload assignments if we just created them
-            if new_assignments:
-                await session.refresh(booking, ["code_assignments"])
-                for a in booking.code_assignments:
-                    await session.refresh(a, ["code_slot"])
-                    await session.refresh(a.code_slot, ["lock"])
+            await self._ensure_code_assignments(session, booking, code)
 
             updated_count = 0
             rescheduled_count = 0
@@ -1736,11 +1685,11 @@ class RentalManager:
                 lock = assignment.code_slot.lock
                 slot_num = assignment.code_slot.slot_number
 
-                # Update assignment code
                 assignment.code = code
 
-                if assignment.is_active and now < assignment.deactivate_at:
-                    # Currently active — re-set on lock immediately
+                if now >= assignment.activate_at and now < assignment.deactivate_at:
+                    # Within active window — re-set on lock immediately
+                    assignment.is_active = True
                     if not booking.code_disabled:
                         try:
                             await self._set_code_with_retry(lock.entity_id, slot_num, code)
@@ -1750,7 +1699,7 @@ class RentalManager:
                                 f"Failed to update code on {lock.entity_id} slot {slot_num} "
                                 f"for booking {booking_id}: {e}"
                             )
-                elif not assignment.is_active and now < assignment.activate_at:
+                elif now < assignment.activate_at:
                     # Future activation — reschedule with new code
                     if self._scheduler and not booking.code_disabled:
                         self._scheduler.reschedule_activation(
@@ -1778,22 +1727,11 @@ class RentalManager:
     async def recode_booking(self, booking_id: int) -> dict:
         """Re-send codes to all assigned locks for a booking.
 
-        Only works if the booking is within its active time window
-        (i.e. between activate_at and deactivate_at for at least one lock).
-        Skips disabled bookings and bookings with no code.
+        Only works if the booking is within its active time window.
+        Creates code assignments if none exist.
         """
         async with get_session_context() as session:
-            result = await session.execute(
-                select(Booking)
-                .options(
-                    selectinload(Booking.code_assignments)
-                    .joinedload(CodeAssignment.code_slot)
-                    .joinedload(CodeSlot.lock),
-                    selectinload(Booking.calendar),
-                )
-                .where(Booking.id == booking_id)
-            )
-            booking = result.scalar_one_or_none()
+            booking = await self._load_booking_with_assignments(session, booking_id)
             if not booking:
                 raise ValueError(f"Booking {booking_id} not found")
 
@@ -1812,13 +1750,7 @@ class RentalManager:
                     "message": "No code available (no phone number and no manual code set).",
                 }
 
-            # Create code assignments if none exist
-            new_assignments = await self._ensure_code_assignments(session, booking, code)
-            if new_assignments:
-                await session.refresh(booking, ["code_assignments"])
-                for a in booking.code_assignments:
-                    await session.refresh(a, ["code_slot"])
-                    await session.refresh(a.code_slot, ["lock"])
+            await self._ensure_code_assignments(session, booking, code)
 
             now = datetime.utcnow()
             recoded_count = 0
@@ -1830,7 +1762,6 @@ class RentalManager:
                 slot_num = assignment.code_slot.slot_number
 
                 if now >= assignment.activate_at and now < assignment.deactivate_at:
-                    # Within active window — re-set the code
                     try:
                         await self._set_code_with_retry(lock.entity_id, slot_num, code)
                         assignment.is_active = True

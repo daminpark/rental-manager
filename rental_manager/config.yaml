@@ -1,6 +1,6 @@
 name: "Rental Manager"
 description: "Lock code manager for VBR rental properties"
-version: "0.3.0"
+version: "0.3.1"
 init: false
 slug: "rental_manager"
 url: "https://github.com/daminpark/rental-manager"
