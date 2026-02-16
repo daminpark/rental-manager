@@ -94,6 +94,28 @@ async def sync_status(manager: RentalManager = Depends(get_manager)):
     return await manager.get_sync_status()
 
 
+@router.post("/sync-status/retry/{lock_entity_id}/{slot_number}")
+async def retry_failed_slot(
+    lock_entity_id: str,
+    slot_number: int,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Retry a failed sync on a specific slot."""
+    try:
+        return await manager.retry_failed_slot(lock_entity_id, slot_number)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/sync-status/retry-all")
+async def retry_all_failed(manager: RentalManager = Depends(get_manager)):
+    """Retry all failed sync slots."""
+    try:
+        return await manager.retry_all_failed()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/info")
 async def get_info():
     """Get instance info (house code, version)."""

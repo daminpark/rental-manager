@@ -297,8 +297,11 @@ class RentalManager:
     ) -> None:
         """Set auto-lock and lock/unlock on all internal locks (not front/back).
 
-        Retries each lock up to 3 times. Notifies on failure.
+        Processes locks sequentially with a stagger delay between each to
+        avoid overwhelming the Z-Wave network. Retries each operation up to
+        3 times. Logs each operation to the audit log and notifies on failure.
         """
+        STAGGER_DELAY = 8  # seconds between each lock
         action_desc = f"auto-lock {'on' if auto_lock else 'off'} + {lock_action}"
         logger.info(f"Internal locks: {action_desc} — {reason}")
 
@@ -309,7 +312,14 @@ class RentalManager:
             locks = [l for l in result.scalars().all() if l.lock_type in INTERNAL_TYPES]
 
             failures = []
-            for lock in locks:
+            for i, lock in enumerate(locks):
+                # Stagger: wait between locks (not before the first one)
+                if i > 0:
+                    logger.debug(
+                        f"Stagger: waiting {STAGGER_DELAY}s before {lock.entity_id}"
+                    )
+                    await asyncio.sleep(STAGGER_DELAY)
+
                 # Set auto-lock
                 al_success = False
                 al_error = None
@@ -317,11 +327,32 @@ class RentalManager:
                     try:
                         await self._ha_client.set_auto_lock(lock.entity_id, auto_lock)
                         al_success = True
+                        logger.info(
+                            f"Auto-lock {'enabled' if auto_lock else 'disabled'} "
+                            f"on {lock.entity_id}"
+                        )
                         break
                     except Exception as e:
                         al_error = str(e)
+                        logger.warning(
+                            f"Auto-lock failed on {lock.entity_id} "
+                            f"(attempt {attempt + 1}/4): {e}"
+                        )
                         if attempt < 3:
                             await asyncio.sleep(5 * (attempt + 1))
+
+                # Log auto-lock result
+                session.add(AuditLog(
+                    action=f"auto_lock_{'enable' if auto_lock else 'disable'}",
+                    lock_id=lock.id,
+                    details=reason,
+                    success=al_success,
+                    error_message=al_error,
+                ))
+
+                # Wait before lock/unlock to let Z-Wave settle
+                if al_success:
+                    await asyncio.sleep(3)
 
                 # Lock or unlock
                 la_success = False
@@ -333,25 +364,30 @@ class RentalManager:
                         else:
                             await self._ha_client.lock(lock.entity_id)
                         la_success = True
+                        logger.info(f"{lock_action}ed {lock.entity_id}")
                         break
                     except Exception as e:
                         la_error = str(e)
+                        logger.warning(
+                            f"{lock_action} failed on {lock.entity_id} "
+                            f"(attempt {attempt + 1}/4): {e}"
+                        )
                         if attempt < 3:
                             await asyncio.sleep(5 * (attempt + 1))
+
+                # Log lock/unlock result
+                session.add(AuditLog(
+                    action=f"whole_house_{lock_action}",
+                    lock_id=lock.id,
+                    details=reason,
+                    success=la_success,
+                    error_message=la_error,
+                ))
 
                 if not al_success:
                     failures.append((lock.entity_id, f"auto-lock: {al_error}"))
                 if not la_success:
                     failures.append((lock.entity_id, f"{lock_action}: {la_error}"))
-
-                audit = AuditLog(
-                    action=f"whole_house_{lock_action}",
-                    lock_id=lock.id,
-                    details=reason,
-                    success=al_success and la_success,
-                    error_message=al_error or la_error,
-                )
-                session.add(audit)
 
             await session.commit()
 
@@ -1917,19 +1953,37 @@ class RentalManager:
         failed = self._sync_manager.get_failed_slots()
         syncing = self._sync_manager.get_syncing_slots()
 
+        # Look up booking names for failed slots
+        failed_info = []
+        for s in failed:
+            info = {
+                "lock_entity_id": s.lock_entity_id,
+                "slot_number": s.slot_number,
+                "error": s.last_error,
+                "retry_count": s.retry_count,
+                "target_code": s.target_code,
+                "booking_uid": s.booking_uid,
+            }
+            # Try to get guest name from booking
+            if s.booking_uid:
+                try:
+                    async with get_session_context() as session:
+                        result = await session.execute(
+                            select(Booking).where(Booking.uid == s.booking_uid)
+                        )
+                        booking = result.scalar_one_or_none()
+                        if booking:
+                            info["guest_name"] = booking.guest_name
+                            info["booking_id"] = booking.id
+                except Exception:
+                    pass
+            failed_info.append(info)
+
         return {
             "total_slots": len(states),
             "failed_count": len(failed),
             "syncing_count": len(syncing),
-            "failed_slots": [
-                {
-                    "lock_entity_id": s.lock_entity_id,
-                    "slot_number": s.slot_number,
-                    "error": s.last_error,
-                    "retry_count": s.retry_count,
-                }
-                for s in failed
-            ],
+            "failed_slots": failed_info,
             "syncing_slots": [
                 {
                     "lock_entity_id": s.lock_entity_id,
@@ -1939,6 +1993,77 @@ class RentalManager:
                 }
                 for s in syncing
             ],
+        }
+
+    async def retry_failed_slot(
+        self, lock_entity_id: str, slot_number: int
+    ) -> dict:
+        """Retry a failed sync on a specific slot.
+
+        Resets the failed state and re-attempts the set/clear operation.
+        """
+        if not self._sync_manager:
+            raise ValueError("Sync manager not initialized")
+
+        slot = self._sync_manager.get_slot_state(lock_entity_id, slot_number)
+        if slot.state != SyncState.FAILED:
+            raise ValueError(
+                f"Slot {lock_entity_id}:{slot_number} is not in failed state "
+                f"(current: {slot.state.value})"
+            )
+
+        target_code = slot.target_code
+        booking_uid = slot.booking_uid
+
+        # Reset the failed slot
+        self._sync_manager.reset_failed_slot(lock_entity_id, slot_number)
+
+        # Re-attempt the operation
+        if target_code:
+            logger.info(
+                f"Manual retry: setting code on {lock_entity_id} slot {slot_number}"
+            )
+            result = await self._sync_manager.set_code(
+                lock_entity_id, slot_number, target_code, booking_uid or ""
+            )
+        else:
+            logger.info(
+                f"Manual retry: clearing code on {lock_entity_id} slot {slot_number}"
+            )
+            result = await self._sync_manager.clear_code(
+                lock_entity_id, slot_number, booking_uid or ""
+            )
+
+        return {
+            "lock_entity_id": lock_entity_id,
+            "slot_number": slot_number,
+            "success": result.success,
+            "state": result.state.value,
+            "error": result.error,
+        }
+
+    async def retry_all_failed(self) -> dict:
+        """Retry all failed sync slots."""
+        if not self._sync_manager:
+            raise ValueError("Sync manager not initialized")
+
+        failed = self._sync_manager.get_failed_slots()
+        results = []
+        for s in failed:
+            try:
+                result = await self.retry_failed_slot(s.lock_entity_id, s.slot_number)
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "lock_entity_id": s.lock_entity_id,
+                    "slot_number": s.slot_number,
+                    "success": False,
+                    "error": str(e),
+                })
+
+        return {
+            "retried": len(results),
+            "results": results,
         }
 
     async def record_unlock_event(

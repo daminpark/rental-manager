@@ -614,6 +614,99 @@ function renderSyncStatus(status) {
     statusDiv.appendChild(icon);
     statusDiv.appendChild(text);
     container.appendChild(statusDiv);
+
+    // Show failed slot details with retry buttons
+    if (status.failed_slots && status.failed_slots.length > 0) {
+        const failedDiv = document.createElement('div');
+        failedDiv.style.marginTop = '0.5rem';
+
+        // Retry all button
+        const retryAllBtn = document.createElement('button');
+        retryAllBtn.className = 'btn btn-sm btn-primary';
+        retryAllBtn.style.marginBottom = '0.5rem';
+        retryAllBtn.textContent = 'Retry All Failed';
+        retryAllBtn.addEventListener('click', retryAllFailed);
+        failedDiv.appendChild(retryAllBtn);
+
+        status.failed_slots.forEach(slot => {
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '0.5rem';
+            row.style.padding = '0.3rem 0.4rem';
+            row.style.marginBottom = '0.25rem';
+            row.style.background = 'var(--danger-bg, rgba(220,53,69,0.08))';
+            row.style.border = '1px solid var(--danger-border, rgba(220,53,69,0.2))';
+            row.style.borderRadius = '4px';
+            row.style.fontSize = '0.75rem';
+
+            const lockName = slot.lock_entity_id.replace('lock.', '').replace(/_/g, ' ');
+            const label = getSlotLabel(slot.slot_number);
+
+            const info = document.createElement('div');
+            info.style.flex = '1';
+
+            const lockSpan = document.createElement('strong');
+            lockSpan.textContent = lockName;
+            info.appendChild(lockSpan);
+            info.appendChild(document.createTextNode(` slot ${slot.slot_number}`));
+
+            if (label) {
+                const labelSpan = document.createElement('span');
+                labelSpan.style.color = 'var(--text-secondary)';
+                labelSpan.textContent = ` (${label})`;
+                info.appendChild(labelSpan);
+            }
+            if (slot.guest_name) {
+                info.appendChild(document.createTextNode(` — ${slot.guest_name}`));
+            }
+
+            const errorLine = document.createElement('div');
+            errorLine.style.color = 'var(--text-secondary)';
+            errorLine.style.fontSize = '0.65rem';
+            errorLine.textContent = `${slot.error || 'Unknown error'} · ${slot.retry_count} retries`;
+            info.appendChild(errorLine);
+
+            row.appendChild(info);
+
+            const retryBtn = document.createElement('button');
+            retryBtn.className = 'btn btn-sm btn-secondary';
+            retryBtn.style.fontSize = '0.65rem';
+            retryBtn.style.padding = '0.15rem 0.4rem';
+            retryBtn.style.whiteSpace = 'nowrap';
+            retryBtn.textContent = 'Retry';
+            retryBtn.addEventListener('click', () => retrySyncSlot(slot.lock_entity_id, slot.slot_number));
+            row.appendChild(retryBtn);
+
+            failedDiv.appendChild(row);
+        });
+
+        container.appendChild(failedDiv);
+    }
+}
+
+async function retrySyncSlot(lockEntityId, slotNumber) {
+    try {
+        const result = await api(`/sync-status/retry/${lockEntityId}/${slotNumber}`, {
+            method: 'POST',
+        });
+        showToast(result.success ? 'Retry started' : `Retry failed: ${result.error}`,
+            result.success ? 'success' : 'error');
+        await loadSyncStatus();
+    } catch (error) {
+        showToast('Retry failed: ' + error.message, 'error');
+    }
+}
+
+async function retryAllFailed() {
+    try {
+        const result = await api('/sync-status/retry-all', { method: 'POST' });
+        const succeeded = result.results.filter(r => r.success).length;
+        showToast(`Retried ${result.retried}: ${succeeded} started`, 'success');
+        await loadSyncStatus();
+    } catch (error) {
+        showToast('Retry failed: ' + error.message, 'error');
+    }
 }
 
 // Action Functions
