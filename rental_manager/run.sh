@@ -7,7 +7,7 @@ export RENTAL_CODE_SYNC_TIMEOUT_SECONDS="$(bashio::config 'code_sync_timeout_sec
 export RENTAL_CODE_SYNC_MAX_RETRIES="$(bashio::config 'code_sync_max_retries')"
 
 # HA Supervisor API — auto-injected by Supervisor
-export RENTAL_HA_URL="http://supervisor/core/api"
+export RENTAL_HA_URL="http://supervisor/core"
 export RENTAL_HA_TOKEN="${SUPERVISOR_TOKEN}"
 
 # Database in persistent /data directory

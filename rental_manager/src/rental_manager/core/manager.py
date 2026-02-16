@@ -1012,9 +1012,14 @@ class RentalManager:
             if not lock:
                 raise ValueError(f"Lock {lock_id} not found")
 
+            success = True
+            error_msg = None
             try:
                 await self._set_code_with_retry(lock.entity_id, EMERGENCY_CODE_SLOT, code)
             except Exception as e:
+                success = False
+                error_msg = str(e)
+                logger.error(f"Emergency code failed on {lock.entity_id}: {e}")
                 await self._notify_failure(
                     f"Emergency code failed on {lock.entity_id} after retries: {e}"
                 )
@@ -1025,7 +1030,8 @@ class RentalManager:
                 lock_id=lock.id,
                 slot_number=EMERGENCY_CODE_SLOT,
                 code=code,
-                success=True,
+                success=success,
+                error_message=error_msg,
             )
             session.add(audit)
             await session.commit()
