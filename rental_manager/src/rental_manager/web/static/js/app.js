@@ -654,12 +654,14 @@ function renderSyncStatus(status) {
     statusDiv.appendChild(text);
     container.appendChild(statusDiv);
 
-    // Show failed slot details with retry buttons
-    if (status.failed_slots && status.failed_slots.length > 0) {
+    const hasFailedSlots = status.failed_slots && status.failed_slots.length > 0;
+    const hasFailedOps = status.failed_ops && status.failed_ops.length > 0;
+
+    if (hasFailedSlots || hasFailedOps) {
         const failedDiv = document.createElement('div');
         failedDiv.style.marginTop = '0.5rem';
 
-        // Retry all button
+        // Retry all button (covers both slots and ops)
         const retryAllBtn = document.createElement('button');
         retryAllBtn.className = 'btn btn-sm btn-primary';
         retryAllBtn.style.marginBottom = '0.5rem';
@@ -667,61 +669,121 @@ function renderSyncStatus(status) {
         retryAllBtn.addEventListener('click', retryAllFailed);
         failedDiv.appendChild(retryAllBtn);
 
-        status.failed_slots.forEach(slot => {
-            const row = document.createElement('div');
-            row.style.display = 'flex';
-            row.style.alignItems = 'center';
-            row.style.gap = '0.5rem';
-            row.style.padding = '0.3rem 0.4rem';
-            row.style.marginBottom = '0.25rem';
-            row.style.background = 'var(--danger-bg, rgba(220,53,69,0.08))';
-            row.style.border = '1px solid var(--danger-border, rgba(220,53,69,0.2))';
-            row.style.borderRadius = '4px';
-            row.style.fontSize = '0.75rem';
+        // Failed code slots
+        if (hasFailedSlots) {
+            status.failed_slots.forEach(slot => {
+                failedDiv.appendChild(renderFailedSlotRow(slot));
+            });
+        }
 
-            const lockName = slot.lock_entity_id.replace('lock.', '').replace(/_/g, ' ');
-            const label = getSlotLabel(slot.slot_number);
-
-            const info = document.createElement('div');
-            info.style.flex = '1';
-
-            const lockSpan = document.createElement('strong');
-            lockSpan.textContent = lockName;
-            info.appendChild(lockSpan);
-            info.appendChild(document.createTextNode(` slot ${slot.slot_number}`));
-
-            if (label) {
-                const labelSpan = document.createElement('span');
-                labelSpan.style.color = 'var(--text-secondary)';
-                labelSpan.textContent = ` (${label})`;
-                info.appendChild(labelSpan);
-            }
-            if (slot.guest_name) {
-                info.appendChild(document.createTextNode(` — ${slot.guest_name}`));
-            }
-
-            const errorLine = document.createElement('div');
-            errorLine.style.color = 'var(--text-secondary)';
-            errorLine.style.fontSize = '0.65rem';
-            errorLine.textContent = `${slot.error || 'Unknown error'} · ${slot.retry_count} retries`;
-            info.appendChild(errorLine);
-
-            row.appendChild(info);
-
-            const retryBtn = document.createElement('button');
-            retryBtn.className = 'btn btn-sm btn-secondary';
-            retryBtn.style.fontSize = '0.65rem';
-            retryBtn.style.padding = '0.15rem 0.4rem';
-            retryBtn.style.whiteSpace = 'nowrap';
-            retryBtn.textContent = 'Retry';
-            retryBtn.addEventListener('click', () => retrySyncSlot(slot.lock_entity_id, slot.slot_number));
-            row.appendChild(retryBtn);
-
-            failedDiv.appendChild(row);
-        });
+        // Failed ops (auto-lock, lock/unlock)
+        if (hasFailedOps) {
+            status.failed_ops.forEach(op => {
+                failedDiv.appendChild(renderFailedOpRow(op));
+            });
+        }
 
         container.appendChild(failedDiv);
     }
+}
+
+function renderFailedSlotRow(slot) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0.4rem;margin-bottom:0.25rem;background:var(--danger-bg,rgba(220,53,69,0.08));border:1px solid var(--danger-border,rgba(220,53,69,0.2));border-radius:4px;font-size:0.75rem';
+
+    const lockName = slot.lock_entity_id.replace('lock.', '').replace(/_/g, ' ');
+    const label = getSlotLabel(slot.slot_number);
+
+    const info = document.createElement('div');
+    info.style.flex = '1';
+
+    const lockSpan = document.createElement('strong');
+    lockSpan.textContent = lockName;
+    info.appendChild(lockSpan);
+    info.appendChild(document.createTextNode(` slot ${slot.slot_number}`));
+
+    if (label) {
+        const labelSpan = document.createElement('span');
+        labelSpan.style.color = 'var(--text-secondary)';
+        labelSpan.textContent = ` (${label})`;
+        info.appendChild(labelSpan);
+    }
+    if (slot.guest_name) {
+        info.appendChild(document.createTextNode(` — ${slot.guest_name}`));
+    }
+
+    const errorLine = document.createElement('div');
+    errorLine.style.color = 'var(--text-secondary)';
+    errorLine.style.fontSize = '0.65rem';
+    errorLine.textContent = `${slot.error || 'Unknown error'} · ${slot.retry_count} retries`;
+    info.appendChild(errorLine);
+
+    row.appendChild(info);
+
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'btn btn-sm btn-secondary';
+    retryBtn.style.cssText = 'font-size:0.65rem;padding:0.15rem 0.4rem;white-space:nowrap';
+    retryBtn.textContent = 'Retry';
+    retryBtn.addEventListener('click', () => retrySyncSlot(slot.lock_entity_id, slot.slot_number));
+    row.appendChild(retryBtn);
+
+    return row;
+}
+
+function renderFailedOpRow(op) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0.4rem;margin-bottom:0.25rem;background:var(--warning-bg,rgba(255,193,7,0.08));border:1px solid var(--warning-border,rgba(255,193,7,0.3));border-radius:4px;font-size:0.75rem';
+
+    const info = document.createElement('div');
+    info.style.flex = '1';
+
+    const lockSpan = document.createElement('strong');
+    lockSpan.textContent = op.lock_name || op.lock_entity_id.replace('lock.', '').replace(/_/g, ' ');
+    info.appendChild(lockSpan);
+
+    const actionBadge = document.createElement('span');
+    actionBadge.style.cssText = 'margin-left:0.4rem;padding:0.1rem 0.3rem;border-radius:3px;font-size:0.65rem;background:var(--bg-tertiary);color:var(--text-secondary)';
+    actionBadge.textContent = op.action;
+    info.appendChild(actionBadge);
+
+    const errorLine = document.createElement('div');
+    errorLine.style.color = 'var(--text-secondary)';
+    errorLine.style.fontSize = '0.65rem';
+    errorLine.textContent = `${op.error || 'Unknown error'} · ${op.retry_count} retries`;
+    info.appendChild(errorLine);
+
+    if (op.reason) {
+        const reasonLine = document.createElement('div');
+        reasonLine.style.color = 'var(--text-secondary)';
+        reasonLine.style.fontSize = '0.6rem';
+        reasonLine.style.fontStyle = 'italic';
+        reasonLine.textContent = op.reason;
+        info.appendChild(reasonLine);
+    }
+
+    row.appendChild(info);
+
+    const btnGroup = document.createElement('div');
+    btnGroup.style.cssText = 'display:flex;gap:0.25rem';
+
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'btn btn-sm btn-secondary';
+    retryBtn.style.cssText = 'font-size:0.65rem;padding:0.15rem 0.4rem;white-space:nowrap';
+    retryBtn.textContent = 'Retry';
+    retryBtn.addEventListener('click', () => retryFailedOp(op.id));
+    btnGroup.appendChild(retryBtn);
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'btn btn-sm btn-secondary';
+    dismissBtn.style.cssText = 'font-size:0.65rem;padding:0.15rem 0.3rem;white-space:nowrap;opacity:0.6';
+    dismissBtn.textContent = '\u2715';
+    dismissBtn.title = 'Dismiss';
+    dismissBtn.addEventListener('click', () => dismissFailedOp(op.id));
+    btnGroup.appendChild(dismissBtn);
+
+    row.appendChild(btnGroup);
+
+    return row;
 }
 
 async function retrySyncSlot(lockEntityId, slotNumber) {
@@ -737,11 +799,31 @@ async function retrySyncSlot(lockEntityId, slotNumber) {
     }
 }
 
+async function retryFailedOp(opId) {
+    try {
+        const result = await api(`/sync-status/retry-op/${opId}`, { method: 'POST' });
+        showToast(result.success ? 'Retry succeeded' : `Retry failed: ${result.error}`,
+            result.success ? 'success' : 'error');
+        await loadSyncStatus();
+    } catch (error) {
+        showToast('Retry failed: ' + error.message, 'error');
+    }
+}
+
+async function dismissFailedOp(opId) {
+    try {
+        await api(`/sync-status/dismiss-op/${opId}`, { method: 'POST' });
+        await loadSyncStatus();
+    } catch (error) {
+        showToast('Dismiss failed: ' + error.message, 'error');
+    }
+}
+
 async function retryAllFailed() {
     try {
         const result = await api('/sync-status/retry-all', { method: 'POST' });
         const succeeded = result.results.filter(r => r.success).length;
-        showToast(`Retried ${result.retried}: ${succeeded} started`, 'success');
+        showToast(`Retried ${result.retried}: ${succeeded} succeeded`, 'success');
         await loadSyncStatus();
     } catch (error) {
         showToast('Retry failed: ' + error.message, 'error');

@@ -64,6 +64,10 @@ class RentalManager:
         self._polling = False
         # Serializes all Z-Wave commands so only one is in flight at a time
         self._zwave_lock = asyncio.Lock()
+        # Track failed non-code operations (auto-lock, lock/unlock)
+        # List of dicts: {id, lock_entity_id, lock_name, action, error, retry_count, reason, failed_at}
+        self._failed_ops: list[dict] = []
+        self._failed_ops_counter = 0
 
     async def initialize(self) -> None:
         """Initialize the manager and all components."""
@@ -403,8 +407,18 @@ class RentalManager:
 
                 if not al_success:
                     failures.append((lock.entity_id, f"auto-lock: {al_error}"))
+                    self._record_failed_op(
+                        lock.entity_id, lock.name,
+                        f"auto-lock {'on' if auto_lock else 'off'}",
+                        al_error or "Unknown error", reason,
+                    )
                 if not la_success:
                     failures.append((lock.entity_id, f"{lock_action}: {la_error}"))
+                    self._record_failed_op(
+                        lock.entity_id, lock.name,
+                        lock_action,
+                        la_error or "Unknown error", reason,
+                    )
 
             await session.commit()
 
@@ -2094,9 +2108,10 @@ class RentalManager:
 
         return {
             "total_slots": len(states),
-            "failed_count": len(failed),
+            "failed_count": len(failed) + len(self._failed_ops),
             "syncing_count": len(syncing),
             "failed_slots": failed_info,
+            "failed_ops": list(self._failed_ops),
             "syncing_slots": [
                 {
                     "lock_entity_id": s.lock_entity_id,
@@ -2178,6 +2193,98 @@ class RentalManager:
             "retried": len(results),
             "results": results,
         }
+
+    # --- Failed operations tracker (auto-lock, lock/unlock) ---
+
+    def _record_failed_op(
+        self,
+        lock_entity_id: str,
+        lock_name: str,
+        action: str,
+        error: str,
+        reason: str,
+    ) -> None:
+        """Record a failed non-code operation for display in the UI."""
+        self._failed_ops_counter += 1
+        self._failed_ops.append({
+            "id": self._failed_ops_counter,
+            "lock_entity_id": lock_entity_id,
+            "lock_name": lock_name,
+            "action": action,  # "auto-lock on", "auto-lock off", "lock", "unlock"
+            "error": error,
+            "retry_count": 0,
+            "reason": reason,
+            "failed_at": datetime.utcnow().isoformat(),
+        })
+        logger.info(
+            f"Recorded failed op #{self._failed_ops_counter}: "
+            f"{action} on {lock_entity_id} — {error}"
+        )
+
+    async def retry_failed_op(self, op_id: int) -> dict:
+        """Retry a failed non-code operation (auto-lock, lock, unlock)."""
+        op = next((o for o in self._failed_ops if o["id"] == op_id), None)
+        if not op:
+            raise ValueError(f"Failed operation {op_id} not found")
+
+        lock_entity_id = op["lock_entity_id"]
+        action = op["action"]
+        op["retry_count"] += 1
+
+        try:
+            if action.startswith("auto-lock"):
+                enabled = action == "auto-lock on"
+                await self._ha_client.set_auto_lock(lock_entity_id, enabled)
+            elif action == "lock":
+                await self._ha_client.lock(lock_entity_id)
+            elif action == "unlock":
+                await self._ha_client.unlock(lock_entity_id)
+            else:
+                raise ValueError(f"Unknown action: {action}")
+
+            logger.info(f"Retry succeeded for op #{op_id}: {action} on {lock_entity_id}")
+
+            # Log success to audit
+            async with get_session_context() as session:
+                result = await session.execute(
+                    select(Lock).where(Lock.entity_id == lock_entity_id)
+                )
+                lock = result.scalar_one_or_none()
+                session.add(AuditLog(
+                    action=f"retry_{action.replace(' ', '_').replace('-', '_')}",
+                    lock_id=lock.id if lock else None,
+                    details=f"Manual retry succeeded (attempt {op['retry_count']})",
+                    success=True,
+                ))
+
+            # Remove from failed list on success
+            self._failed_ops = [o for o in self._failed_ops if o["id"] != op_id]
+
+            return {"op_id": op_id, "success": True}
+
+        except Exception as e:
+            op["error"] = str(e)
+            logger.error(f"Retry failed for op #{op_id}: {action} on {lock_entity_id}: {e}")
+            return {"op_id": op_id, "success": False, "error": str(e)}
+
+    async def retry_all_failed_ops(self) -> dict:
+        """Retry all failed non-code operations."""
+        results = []
+        for op in list(self._failed_ops):
+            result = await self.retry_failed_op(op["id"])
+            results.append(result)
+        return {
+            "retried": len(results),
+            "results": results,
+        }
+
+    def dismiss_failed_op(self, op_id: int) -> dict:
+        """Dismiss a failed operation from the UI without retrying."""
+        op = next((o for o in self._failed_ops if o["id"] == op_id), None)
+        if not op:
+            raise ValueError(f"Failed operation {op_id} not found")
+        self._failed_ops = [o for o in self._failed_ops if o["id"] != op_id]
+        return {"op_id": op_id, "dismissed": True}
 
     async def record_unlock_event(
         self,

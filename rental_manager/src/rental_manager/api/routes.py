@@ -109,9 +109,38 @@ async def retry_failed_slot(
 
 @router.post("/sync-status/retry-all")
 async def retry_all_failed(manager: RentalManager = Depends(get_manager)):
-    """Retry all failed sync slots."""
+    """Retry all failed sync slots and failed ops."""
     try:
-        return await manager.retry_all_failed()
+        slot_results = await manager.retry_all_failed()
+        op_results = await manager.retry_all_failed_ops()
+        return {
+            "retried": slot_results["retried"] + op_results["retried"],
+            "results": slot_results["results"] + op_results["results"],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/sync-status/retry-op/{op_id}")
+async def retry_failed_op(
+    op_id: int,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Retry a failed non-code operation (auto-lock, lock, unlock)."""
+    try:
+        return await manager.retry_failed_op(op_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/sync-status/dismiss-op/{op_id}")
+async def dismiss_failed_op(
+    op_id: int,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Dismiss a failed operation without retrying."""
+    try:
+        return manager.dismiss_failed_op(op_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
