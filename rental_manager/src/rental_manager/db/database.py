@@ -37,6 +37,7 @@ async def _run_migrations() -> None:
         "ALTER TABLE bookings ADD COLUMN code_disabled BOOLEAN DEFAULT 0",
         "ALTER TABLE bookings ADD COLUMN code_disabled_at DATETIME",
         "ALTER TABLE calendars ADD COLUMN ha_entity_id VARCHAR(100)",
+        "ALTER TABLE locks ADD COLUMN auto_lock_enabled BOOLEAN",
     ]
     async with engine.begin() as conn:
         for stmt in migrations:
