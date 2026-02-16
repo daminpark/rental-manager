@@ -138,6 +138,8 @@ class Booking(Base):
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)  # "Blocked" events
     locked_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     code_locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    code_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    code_disabled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

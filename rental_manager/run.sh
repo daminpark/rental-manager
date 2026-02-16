@@ -13,6 +13,10 @@ export RENTAL_HA_TOKEN="${SUPERVISOR_TOKEN}"
 # Database in persistent /data directory
 export RENTAL_DATABASE_URL="sqlite+aiosqlite:////data/rental_manager.db"
 
+# Google Sheets backup (optional)
+export RENTAL_GOOGLE_SHEETS_CREDENTIALS="$(bashio::config 'google_sheets_credentials')"
+export RENTAL_GOOGLE_SHEETS_SPREADSHEET_ID="$(bashio::config 'google_sheets_spreadsheet_id')"
+
 bashio::log.info "Starting Rental Manager for house ${RENTAL_HOUSE_CODE}..."
 
 exec python -m rental_manager.main

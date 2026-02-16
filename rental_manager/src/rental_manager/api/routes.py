@@ -257,6 +257,30 @@ async def get_booking_lock_times(
     return await manager.get_booking_lock_times(booking_id)
 
 
+@router.post("/bookings/{booking_id}/disable-code")
+async def disable_booking_code(
+    booking_id: int,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Disable (clear) the guest code for a booking across all assigned locks."""
+    try:
+        return await manager.disable_booking_code(booking_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/bookings/{booking_id}/enable-code")
+async def enable_booking_code(
+    booking_id: int,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Re-enable the guest code for a previously disabled booking."""
+    try:
+        return await manager.enable_booking_code(booking_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.post("/bookings/{booking_id}/time-override")
 async def set_booking_time_override(
     booking_id: int,

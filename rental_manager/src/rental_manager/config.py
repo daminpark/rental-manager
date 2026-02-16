@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     # House code for this instance
     house_code: str = "195"
 
+    # Google Sheets backup for emergency codes
+    google_sheets_credentials: str = ""  # Path to service account JSON
+    google_sheets_spreadsheet_id: str = ""  # Google Sheet ID
+
 
 def build_locks(house_code: str) -> list[LockConfig]:
     """Build lock configuration for the given house."""

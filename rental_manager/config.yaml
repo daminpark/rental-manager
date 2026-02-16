@@ -1,6 +1,6 @@
 name: "Rental Manager"
 description: "Lock code manager for VBR rental properties"
-version: "0.1.8"
+version: "0.1.9"
 init: false
 slug: "rental_manager"
 url: "https://github.com/daminpark/rental-manager"
@@ -17,8 +17,12 @@ options:
   calendar_poll_interval: 120
   code_sync_timeout_seconds: 120
   code_sync_max_retries: 3
+  google_sheets_credentials: ""
+  google_sheets_spreadsheet_id: ""
 schema:
   house_code: str
   calendar_poll_interval: int
   code_sync_timeout_seconds: int
   code_sync_max_retries: int
+  google_sheets_credentials: str
+  google_sheets_spreadsheet_id: str

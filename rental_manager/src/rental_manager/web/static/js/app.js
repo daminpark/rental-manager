@@ -306,6 +306,10 @@ function createBookingRow(booking, today) {
     const isCurrent = booking.check_in_date <= today && booking.check_out_date >= today;
     if (isPast) row.style.opacity = '0.5';
     if (isCurrent) row.style.borderLeft = '3px solid var(--accent-green)';
+    if (booking.code_disabled) {
+        row.style.opacity = '0.5';
+        row.style.textDecoration = 'line-through';
+    }
 
     const guestCell = document.createElement('td');
     guestCell.textContent = booking.guest_name;
@@ -324,15 +328,23 @@ function createBookingRow(booking, today) {
 
     const codeCell = document.createElement('td');
     codeCell.style.padding = '0.5rem 0.75rem';
-    const codeEl = document.createElement('code');
-    codeEl.textContent = booking.code || '---';
-    codeCell.appendChild(codeEl);
-    if (booking.code_locked) {
-        const lockIcon = document.createElement('span');
-        lockIcon.textContent = ' \u{1F512}';
-        lockIcon.title = 'Code finalized';
-        lockIcon.style.fontSize = '0.75rem';
-        codeCell.appendChild(lockIcon);
+    if (booking.code_disabled) {
+        const disabledBadge = document.createElement('span');
+        disabledBadge.className = 'badge badge-danger';
+        disabledBadge.textContent = 'DISABLED';
+        disabledBadge.style.fontSize = '0.7rem';
+        codeCell.appendChild(disabledBadge);
+    } else {
+        const codeEl = document.createElement('code');
+        codeEl.textContent = booking.code || '---';
+        codeCell.appendChild(codeEl);
+        if (booking.code_locked) {
+            const lockIcon = document.createElement('span');
+            lockIcon.textContent = ' \u{1F512}';
+            lockIcon.title = 'Code finalized';
+            lockIcon.style.fontSize = '0.75rem';
+            codeCell.appendChild(lockIcon);
+        }
     }
     row.appendChild(codeCell);
 
@@ -346,17 +358,57 @@ function createBookingRow(booking, today) {
 
     const actionsCell = document.createElement('td');
     actionsCell.style.padding = '0.5rem 0.75rem';
-    const btn = document.createElement('button');
-    btn.className = 'btn btn-sm btn-secondary';
-    btn.textContent = 'Set Times';
-    btn.addEventListener('click', (e) => {
+    actionsCell.style.whiteSpace = 'nowrap';
+
+    const timesBtn = document.createElement('button');
+    timesBtn.className = 'btn btn-sm btn-secondary';
+    timesBtn.textContent = 'Set Times';
+    timesBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         showTimeOverride(booking.id);
     });
-    actionsCell.appendChild(btn);
+    actionsCell.appendChild(timesBtn);
+
+    if (!isPast) {
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = booking.code_disabled
+            ? 'btn btn-sm btn-success'
+            : 'btn btn-sm btn-danger';
+        toggleBtn.textContent = booking.code_disabled ? 'Enable' : 'Disable';
+        toggleBtn.style.marginLeft = '0.25rem';
+        toggleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleBookingCode(booking.id, booking.code_disabled);
+        });
+        actionsCell.appendChild(toggleBtn);
+    }
+
     row.appendChild(actionsCell);
 
     return row;
+}
+
+async function toggleBookingCode(bookingId, currentlyDisabled) {
+    const action = currentlyDisabled ? 'enable' : 'disable';
+    const confirmMsg = currentlyDisabled
+        ? 'Re-enable this guest\'s code on all locks?'
+        : 'Disable this guest\'s code on all locks? The code will be cleared immediately.';
+
+    if (!confirm(confirmMsg)) return;
+
+    try {
+        const result = await api(`/bookings/${bookingId}/${action}-code`, {
+            method: 'POST',
+        });
+        let msg = `Code ${action}d successfully`;
+        if (result.locks_cleared) msg += ` (${result.locks_cleared} lock(s) cleared)`;
+        if (result.locks_activated) msg += ` (${result.locks_activated} lock(s) activated)`;
+        if (result.locks_rescheduled) msg += ` (${result.locks_rescheduled} rescheduled)`;
+        showToast(msg, 'success');
+        loadBookings();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
 }
 
 function getCalendarDisplayName(calendarId) {

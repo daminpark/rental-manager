@@ -363,6 +363,33 @@ class RentalManager:
         self, lock_entity_id: str, slot_number: int, code: str, booking_uid: str
     ) -> None:
         """Activate a code on a lock."""
+        # Guard: skip activation if booking is disabled
+        async with get_session_context() as session:
+            booking_result = await session.execute(
+                select(Booking).where(Booking.uid == booking_uid)
+            )
+            booking = booking_result.scalar_one_or_none()
+            if booking and booking.code_disabled:
+                logger.info(f"Skipping activation for disabled booking {booking_uid}")
+                return
+
+            # Guard: skip if same code already active on another slot of this lock
+            lock_result = await session.execute(
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
+            )
+            lock = lock_result.scalar_one_or_none()
+            if lock:
+                for slot in lock.code_slots:
+                    if (slot.slot_number != slot_number
+                            and slot.current_code == code
+                            and slot.sync_state == CodeSyncState.ACTIVE.value):
+                        logger.info(
+                            f"Skipping duplicate code {code} on {lock_entity_id} slot {slot_number} "
+                            f"— already active on slot {slot.slot_number}"
+                        )
+                        return
+
         logger.info(
             f"Activating code on {lock_entity_id} slot {slot_number} "
             f"for booking {booking_uid}"
@@ -520,6 +547,9 @@ class RentalManager:
                     logger.error(f"Error fetching calendar {calendar.calendar_id}: {e}")
                     calendar.last_fetch_error = str(e)
 
+            # Check for upcoming bookings without codes
+            await self._check_upcoming_no_code_bookings(session)
+
             await session.commit()
 
         self._polling = False
@@ -613,6 +643,71 @@ class RentalManager:
                             f"check-in {parsed.check_in_date} 14:30, "
                             f"check-out {parsed.check_out_date} 11:30"
                         )
+
+                    # Notify if booking has no phone (can't generate code)
+                    if not parsed.phone:
+                        await self._notify_no_code(
+                            parsed.guest_name, calendar.name,
+                            parsed.check_in_date, parsed.check_out_date,
+                        )
+
+    async def _notify_no_code(
+        self, guest_name: str, calendar_name: str, check_in: date, check_out: date
+    ) -> None:
+        """Send HA notification for a booking with no code."""
+        message = (
+            f"Booking without code: {guest_name} "
+            f"({calendar_name}, {check_in} to {check_out}). "
+            f"No phone number available to generate a code."
+        )
+        logger.warning(message)
+        try:
+            await self._ha_client.send_notification(
+                message, title="Rental Manager — Missing Code"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send no-code notification: {e}")
+
+    async def _check_upcoming_no_code_bookings(self, session: AsyncSession) -> None:
+        """Check for upcoming bookings (within 48h) that still have no code. Dedup via AuditLog."""
+        cutoff = date.today() + timedelta(days=2)
+        today = date.today()
+
+        result = await session.execute(
+            select(Booking)
+            .options(selectinload(Booking.calendar))
+            .where(
+                Booking.is_blocked == False,
+                Booking.check_in_date <= cutoff,
+                Booking.check_out_date >= today,
+                Booking.phone == None,
+                Booking.locked_code == None,
+            )
+        )
+        bookings = result.scalars().all()
+
+        for booking in bookings:
+            # Check if we already notified for this booking
+            audit_result = await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "no_code_warning",
+                    AuditLog.booking_id == booking.id,
+                ).limit(1)
+            )
+            if audit_result.scalar_one_or_none():
+                continue
+
+            await self._notify_no_code(
+                booking.guest_name,
+                booking.calendar.name if booking.calendar else "Unknown",
+                booking.check_in_date, booking.check_out_date,
+            )
+            session.add(AuditLog(
+                action="no_code_warning",
+                booking_id=booking.id,
+                details=f"No code for {booking.guest_name} checking in {booking.check_in_date}",
+                success=True,
+            ))
 
     async def _schedule_booking_codes(
         self, session: AsyncSession, calendar: Calendar, booking: Booking
@@ -780,6 +875,7 @@ class RentalManager:
                     "is_blocked": b.is_blocked,
                     "code": b.locked_code or (generate_code_from_phone(b.phone) if b.phone else None),
                     "code_locked": b.locked_code is not None,
+                    "code_disabled": b.code_disabled,
                 }
                 for b in bookings
             ]
@@ -993,6 +1089,9 @@ class RentalManager:
                     f"Emergency code rotation failed on {len(errors)} lock(s) after retries: {failed_locks}"
                 )
 
+            # Backup to Google Sheets
+            await self._backup_emergency_codes()
+
             return {
                 "success_count": success_count,
                 "total_locks": len(locks),
@@ -1035,6 +1134,9 @@ class RentalManager:
             )
             session.add(audit)
             await session.commit()
+
+            # Backup to Google Sheets
+            await self._backup_emergency_codes()
 
             return {
                 "lock_id": lock.id,
@@ -1186,6 +1288,157 @@ class RentalManager:
                 "entity_id": lock.entity_id,
                 "slot_number": slot_number,
             }
+
+    async def disable_booking_code(self, booking_id: int) -> dict:
+        """Disable a guest's code — clear from all locks immediately."""
+        from rental_manager.scheduler.scheduler import JobType
+
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Booking)
+                .options(
+                    selectinload(Booking.code_assignments)
+                    .joinedload(CodeAssignment.code_slot)
+                    .joinedload(CodeSlot.lock),
+                )
+                .where(Booking.id == booking_id)
+            )
+            booking = result.scalar_one_or_none()
+            if not booking:
+                raise ValueError(f"Booking {booking_id} not found")
+            if booking.code_disabled:
+                return {"booking_id": booking_id, "status": "already_disabled"}
+
+            booking.code_disabled = True
+            booking.code_disabled_at = datetime.utcnow()
+
+            cleared_count = 0
+            for assignment in booking.code_assignments:
+                lock = assignment.code_slot.lock
+                slot_num = assignment.code_slot.slot_number
+                if assignment.is_active:
+                    try:
+                        await self._ha_clear_code(lock.entity_id, slot_num)
+                        cleared_count += 1
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to clear slot {slot_num} on {lock.entity_id} "
+                            f"while disabling booking {booking_id}: {e}"
+                        )
+                assignment.is_active = False
+
+            # Cancel pending activation jobs
+            if self._scheduler:
+                jobs = self._scheduler.get_jobs_for_booking(booking.uid)
+                for job in jobs:
+                    if job.job_type == JobType.ACTIVATE_CODE:
+                        self._scheduler.cancel_job(job.job_id)
+
+            session.add(AuditLog(
+                action="code_disabled",
+                booking_id=booking.id,
+                details=f"Disabled code for {booking.guest_name}, cleared {cleared_count} lock(s)",
+                success=True,
+            ))
+            await session.commit()
+
+        return {
+            "booking_id": booking_id,
+            "status": "disabled",
+            "locks_cleared": cleared_count,
+        }
+
+    async def enable_booking_code(self, booking_id: int) -> dict:
+        """Re-enable a guest's code — set on all locks if within active window."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Booking)
+                .options(
+                    selectinload(Booking.calendar),
+                    selectinload(Booking.code_assignments)
+                    .joinedload(CodeAssignment.code_slot)
+                    .joinedload(CodeSlot.lock),
+                )
+                .where(Booking.id == booking_id)
+            )
+            booking = result.scalar_one_or_none()
+            if not booking:
+                raise ValueError(f"Booking {booking_id} not found")
+            if not booking.code_disabled:
+                return {"booking_id": booking_id, "status": "already_enabled"}
+
+            booking.code_disabled = False
+            booking.code_disabled_at = None
+
+            code = booking.locked_code or generate_code_from_phone(booking.phone)
+            if not code:
+                await session.commit()
+                return {
+                    "booking_id": booking_id,
+                    "status": "enabled_no_code",
+                    "message": "No code available (no phone number)",
+                }
+
+            now = datetime.utcnow()
+            activated_count = 0
+            rescheduled_count = 0
+
+            for assignment in booking.code_assignments:
+                lock = assignment.code_slot.lock
+                slot_num = assignment.code_slot.slot_number
+
+                if now >= assignment.activate_at and now < assignment.deactivate_at:
+                    # Within active window — re-set immediately
+                    try:
+                        await self._set_code_with_retry(lock.entity_id, slot_num, code)
+                        assignment.is_active = True
+                        activated_count += 1
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to re-set slot {slot_num} on {lock.entity_id} "
+                            f"while enabling booking {booking_id}: {e}"
+                        )
+                elif now < assignment.activate_at:
+                    # Future activation — reschedule
+                    if self._scheduler:
+                        self._scheduler.reschedule_activation(
+                            lock.entity_id, slot_num, booking.uid,
+                            assignment.activate_at, code,
+                        )
+                        rescheduled_count += 1
+
+            session.add(AuditLog(
+                action="code_enabled",
+                booking_id=booking.id,
+                details=(
+                    f"Re-enabled code for {booking.guest_name}, "
+                    f"activated {activated_count}, rescheduled {rescheduled_count}"
+                ),
+                success=True,
+            ))
+            await session.commit()
+
+        return {
+            "booking_id": booking_id,
+            "status": "enabled",
+            "locks_activated": activated_count,
+            "locks_rescheduled": rescheduled_count,
+        }
+
+    async def _backup_emergency_codes(self) -> None:
+        """Backup emergency codes to Google Sheets."""
+        try:
+            from rental_manager.core.sheets_backup import SheetsBackup
+            creds_path = self.settings.google_sheets_credentials
+            spreadsheet_id = self.settings.google_sheets_spreadsheet_id
+            if not creds_path or not spreadsheet_id:
+                return
+            backup = SheetsBackup(creds_path, spreadsheet_id)
+            codes = await self.get_emergency_codes()
+            backup.update_emergency_codes(codes)
+            logger.info("Emergency codes backed up to Google Sheets")
+        except Exception as e:
+            logger.error(f"Failed to backup emergency codes to Google Sheets: {e}")
 
     async def set_time_override(
         self,

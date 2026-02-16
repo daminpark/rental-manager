@@ -1,12 +1,16 @@
 """Database connection and session management."""
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from rental_manager.config import settings
 from rental_manager.db.models import Base
+
+logger = logging.getLogger(__name__)
 
 engine = create_async_engine(
     settings.database_url,
@@ -24,6 +28,22 @@ async def init_db() -> None:
     """Initialize the database, creating all tables."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _run_migrations()
+
+
+async def _run_migrations() -> None:
+    """Run lightweight schema migrations for new columns on existing tables."""
+    migrations = [
+        "ALTER TABLE bookings ADD COLUMN code_disabled BOOLEAN DEFAULT 0",
+        "ALTER TABLE bookings ADD COLUMN code_disabled_at DATETIME",
+    ]
+    async with engine.begin() as conn:
+        for stmt in migrations:
+            try:
+                await conn.execute(text(stmt))
+                logger.info("Migration applied: %s", stmt)
+            except Exception:
+                pass  # Column already exists
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
