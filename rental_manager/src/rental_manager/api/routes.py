@@ -597,7 +597,7 @@ async def get_audit_log(
 ):
     """Get the audit log."""
     from rental_manager.db.database import get_session_context
-    from rental_manager.db.models import AuditLog
+    from rental_manager.db.models import AuditLog, Lock
     from sqlalchemy import select
 
     async with get_session_context() as session:
@@ -612,12 +612,22 @@ async def get_audit_log(
         result = await session.execute(query)
         logs = result.scalars().all()
 
+        # Build lock name lookup
+        lock_ids = {log.lock_id for log in logs if log.lock_id}
+        lock_names = {}
+        if lock_ids:
+            lock_result = await session.execute(
+                select(Lock.id, Lock.name).where(Lock.id.in_(lock_ids))
+            )
+            lock_names = {row.id: row.name for row in lock_result}
+
         return [
             {
                 "id": log.id,
                 "timestamp": log.timestamp.isoformat(),
                 "action": log.action,
                 "lock_id": log.lock_id,
+                "lock_name": lock_names.get(log.lock_id),
                 "booking_id": log.booking_id,
                 "slot_number": log.slot_number,
                 "code": log.code,

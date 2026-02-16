@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rental Manager</title>
-    <link rel="stylesheet" href="static/css/styles.css?v=0.3.1">
+    <link rel="stylesheet" href="static/css/styles.css?v=0.3.2">
 </head>
 <body>
     <div class="app-container">
@@ -42,7 +42,7 @@
 
                 <div class="nav-section">
                     <div class="nav-section-title">Status</div>
-                    <div id="sync-status" class="nav-item" style="cursor: default;">
+                    <div id="sync-status" class="nav-item">
                         <div class="sync-status">
                             <span class="sync-status-icon active"></span>
                             <span>Loading...</span>
@@ -170,6 +170,9 @@
                 <button class="modal-close" onclick="closeModal('lock-detail-modal')">&times;</button>
             </div>
             <div class="modal-body">
+                <div id="lock-detail-controls" style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; padding: 0.5rem; background: var(--card-bg, #f8f9fa); border-radius: 6px; font-size: 0.8rem;">
+                    <!-- Populated by JS: auto-lock toggle -->
+                </div>
                 <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
                     <button class="btn btn-sm btn-primary" id="tab-slots-btn" onclick="showLockTab('slots')">Code Slots</button>
                     <button class="btn btn-sm btn-secondary" id="tab-history-btn" onclick="showLockTab('history')">Unlock History</button>
@@ -228,6 +231,6 @@
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="static/js/app.js?v=0.3.1"></script>
+    <script src="static/js/app.js?v=0.3.2"></script>
 </body>
 </html>

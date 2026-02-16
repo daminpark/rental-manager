@@ -362,7 +362,9 @@ class RentalManager:
                         if attempt < 3:
                             await asyncio.sleep(5 * (attempt + 1))
 
-                # Log auto-lock result
+                # Log auto-lock result and persist to DB
+                if al_success:
+                    lock.auto_lock_enabled = auto_lock
                 session.add(AuditLog(
                     action=f"auto_lock_{'enable' if auto_lock else 'disable'}",
                     lock_id=lock.id,
@@ -939,7 +941,7 @@ class RentalManager:
     # Public API methods
 
     async def get_locks(self) -> list[dict]:
-        """Get all locks for this house."""
+        """Get all locks for this house (DB only — no HA polling)."""
         async with get_session_context() as session:
             query = select(Lock).options(
                 selectinload(Lock.house),
@@ -1001,6 +1003,7 @@ class RentalManager:
                     "lock_type": lock.lock_type,
                     "master_code": lock.master_code,
                     "emergency_code": lock.emergency_code,
+                    "auto_lock_enabled": lock.auto_lock_enabled,
                     "slots": [
                         _slot_info(slot)
                         for slot in sorted(lock.code_slots, key=lambda s: s.slot_number)
@@ -2123,6 +2126,21 @@ class RentalManager:
     async def set_auto_lock(self, lock_entity_id: str, enabled: bool) -> dict:
         """Enable or disable auto-lock on a lock."""
         await self._ha_client.set_auto_lock(lock_entity_id, enabled)
+        # Persist to DB
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).where(Lock.entity_id == lock_entity_id)
+            )
+            lock = result.scalar_one_or_none()
+            if lock:
+                lock.auto_lock_enabled = enabled
+                session.add(AuditLog(
+                    action="auto_lock_changed",
+                    lock_id=lock.id,
+                    details=f"Auto-lock {'enabled' if enabled else 'disabled'} on {lock.name}",
+                    success=True,
+                ))
+                await session.commit()
         return {"entity_id": lock_entity_id, "auto_lock": enabled}
 
     async def set_volume(self, lock_entity_id: str, level: str) -> dict:

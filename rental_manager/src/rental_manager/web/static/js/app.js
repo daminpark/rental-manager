@@ -101,12 +101,13 @@ function renderLocks() {
         lockName.textContent = lock.name;
         nameDiv.appendChild(lockName);
 
+        const activeCodes = countActiveCodes(lock);
         const statusDiv = document.createElement('div');
-        statusDiv.className = 'lock-status locked';
+        statusDiv.className = `lock-status ${activeCodes > 0 ? 'locked' : 'unknown'}`;
         const statusDot = document.createElement('span');
         statusDot.className = 'lock-status-dot';
         statusDiv.appendChild(statusDot);
-        statusDiv.appendChild(document.createTextNode(' Locked'));
+        statusDiv.appendChild(document.createTextNode(` ${activeCodes} active`));
 
         header.appendChild(nameDiv);
         header.appendChild(statusDiv);
@@ -114,11 +115,13 @@ function renderLocks() {
         const info = document.createElement('div');
         info.className = 'lock-info';
 
+        const autoLockLabel = lock.auto_lock_enabled === true ? 'On' : lock.auto_lock_enabled === false ? 'Off' : '---';
+
         const infoItems = [
             { label: 'Type', value: lock.lock_type },
-            { label: 'Active Codes', value: countActiveCodes(lock) },
             { label: 'Master Code', value: lock.master_code || '---' },
-            { label: 'Emergency Code', value: lock.emergency_code || '---' },
+            { label: 'Auto-Lock', value: autoLockLabel },
+            { label: 'Emergency', value: lock.emergency_code || '---' },
         ];
 
         infoItems.forEach(item => {
@@ -165,7 +168,8 @@ function renderLocks() {
 }
 
 function countActiveCodes(lock) {
-    return lock.slots.filter(s => s.current_code && s.slot_number > 1 && s.slot_number < 20).length;
+    // Count guest slots (2-18) that have an active assignment
+    return lock.slots.filter(s => s.is_active && s.slot_number > 1 && s.slot_number < 20).length;
 }
 
 function renderBookings() {
@@ -626,7 +630,11 @@ function renderSyncStatus(status) {
     const container = document.getElementById('sync-status');
     if (!container) return;
 
+    // Preserve activity log expanded state
+    const wasExpanded = container.querySelector('.activity-log') !== null;
+
     container.textContent = '';
+    container.style.cursor = 'pointer';
 
     const statusDiv = document.createElement('div');
     statusDiv.className = 'sync-status';
@@ -652,6 +660,18 @@ function renderSyncStatus(status) {
 
     statusDiv.appendChild(icon);
     statusDiv.appendChild(text);
+
+    const chevron = document.createElement('span');
+    chevron.className = 'activity-log-chevron';
+    chevron.textContent = '\u25BE';
+    chevron.style.cssText = 'margin-left:auto;font-size:0.7rem;color:var(--text-secondary);transition:transform 0.2s';
+    statusDiv.appendChild(chevron);
+
+    statusDiv.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleActivityLog(container, chevron);
+    });
+
     container.appendChild(statusDiv);
 
     const hasFailedSlots = status.failed_slots && status.failed_slots.length > 0;
@@ -685,6 +705,141 @@ function renderSyncStatus(status) {
 
         container.appendChild(failedDiv);
     }
+
+    // Restore expanded state
+    if (wasExpanded) {
+        loadActivityLog(container, chevron);
+    }
+}
+
+function toggleActivityLog(container, chevron) {
+    const existing = container.querySelector('.activity-log');
+    if (existing) {
+        existing.remove();
+        chevron.style.transform = '';
+        return;
+    }
+    chevron.style.transform = 'rotate(180deg)';
+    loadActivityLog(container, chevron);
+}
+
+async function loadActivityLog(container, chevron) {
+    // Remove existing if any
+    const existing = container.querySelector('.activity-log');
+    if (existing) existing.remove();
+
+    chevron.style.transform = 'rotate(180deg)';
+
+    const logDiv = document.createElement('div');
+    logDiv.className = 'activity-log';
+    logDiv.style.cssText = 'margin-top:0.5rem;max-height:300px;overflow-y:auto;font-size:0.7rem;border-top:1px solid var(--border-color, #e0e0e0);padding-top:0.4rem';
+
+    const loadingSpan = document.createElement('span');
+    loadingSpan.style.color = 'var(--text-secondary)';
+    loadingSpan.textContent = 'Loading...';
+    logDiv.appendChild(loadingSpan);
+    container.appendChild(logDiv);
+
+    try {
+        const logs = await api('/audit-log?limit=30');
+        logDiv.textContent = '';
+
+        if (logs.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'color:var(--text-secondary);padding:0.25rem 0';
+            empty.textContent = 'No activity yet';
+            logDiv.appendChild(empty);
+            return;
+        }
+
+        logs.forEach(log => {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding:0.2rem 0;border-bottom:1px solid var(--border-color, rgba(0,0,0,0.05));display:flex;gap:0.4rem;align-items:baseline';
+
+            const time = document.createElement('span');
+            time.style.cssText = 'color:var(--text-secondary);white-space:nowrap;min-width:3.5rem';
+            const d = new Date(log.timestamp);
+            time.textContent = formatActivityTime(d);
+
+            const action = document.createElement('span');
+            action.style.cssText = 'flex:1;word-break:break-word';
+            action.textContent = formatAuditAction(log);
+
+            if (!log.success) {
+                action.style.color = 'var(--accent-red, #dc3545)';
+            }
+
+            row.appendChild(time);
+            row.appendChild(action);
+            logDiv.appendChild(row);
+        });
+    } catch (err) {
+        logDiv.textContent = '';
+        const errorSpan = document.createElement('span');
+        errorSpan.style.color = 'var(--accent-red, #dc3545)';
+        errorSpan.textContent = 'Failed to load activity log';
+        logDiv.appendChild(errorSpan);
+    }
+}
+
+function formatActivityTime(d) {
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMins = Math.floor(diffMs / 60000);
+
+    if (diffMins < 1) return 'now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays < 7) return `${diffDays}d ago`;
+
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatAuditAction(log) {
+    const actionLabels = {
+        'code_activated': 'Activated',
+        'code_deactivated': 'Deactivated',
+        'code_finalized': 'Finalized',
+        'code_sync_failed': 'Sync failed',
+        'master_code_set': 'Master set',
+        'emergency_code_randomized': 'Emergency randomized',
+        'emergency_code_set': 'Emergency set',
+        'clear_all_codes': 'All cleared',
+        'set_slot_code': 'Slot set',
+        'clear_slot_code': 'Slot cleared',
+        'code_disabled': 'Disabled',
+        'code_enabled': 'Enabled',
+        'booking_code_set': 'Code set',
+        'booking_recoded': 'Recoded',
+        'auto_lock_changed': 'Auto-lock',
+        'no_code_warning': 'No code',
+    };
+
+    const label = actionLabels[log.action] || log.action.replace(/_/g, ' ');
+    const parts = [label];
+
+    // Add lock name if available
+    if (log.lock_name) {
+        // Shorten: "195 Front Lock" -> "195 Front"
+        const short = log.lock_name.replace(/ Lock$/, '');
+        parts.push(short);
+    }
+
+    // Add slot info
+    if (log.slot_number) {
+        parts.push(`s${log.slot_number}`);
+    }
+
+    // Add details if present (but skip if it duplicates lock name)
+    if (log.details && !log.details.includes(log.lock_name || '__none__')) {
+        parts.push(log.details);
+    }
+
+    return parts.join(' \u00B7 ');
 }
 
 function renderFailedSlotRow(slot) {
@@ -1289,6 +1444,40 @@ function showLockDetail(entityId) {
     document.getElementById('lock-detail-title').textContent = lock.name;
     document.getElementById('lock-detail-entity').textContent = lock.entity_id;
 
+    // Auto-lock toggle
+    const controls = document.getElementById('lock-detail-controls');
+    controls.textContent = '';
+
+    const autoLockLabel = document.createElement('span');
+    autoLockLabel.textContent = 'Auto-Lock:';
+    autoLockLabel.style.fontWeight = '600';
+    controls.appendChild(autoLockLabel);
+
+    const autoLockOnBtn = document.createElement('button');
+    autoLockOnBtn.className = `btn btn-sm ${lock.auto_lock_enabled === true ? 'btn-success' : 'btn-secondary'}`;
+    autoLockOnBtn.textContent = 'On';
+    autoLockOnBtn.style.fontSize = '0.7rem';
+    autoLockOnBtn.style.padding = '0.15rem 0.5rem';
+    autoLockOnBtn.addEventListener('click', () => toggleAutoLock(lock.entity_id, true));
+
+    const autoLockOffBtn = document.createElement('button');
+    autoLockOffBtn.className = `btn btn-sm ${lock.auto_lock_enabled === false ? 'btn-danger' : 'btn-secondary'}`;
+    autoLockOffBtn.textContent = 'Off';
+    autoLockOffBtn.style.fontSize = '0.7rem';
+    autoLockOffBtn.style.padding = '0.15rem 0.5rem';
+    autoLockOffBtn.addEventListener('click', () => toggleAutoLock(lock.entity_id, false));
+
+    controls.appendChild(autoLockOnBtn);
+    controls.appendChild(autoLockOffBtn);
+
+    // Active codes summary
+    const activeCount = countActiveCodes(lock);
+    const activeSummary = document.createElement('span');
+    activeSummary.style.marginLeft = 'auto';
+    activeSummary.style.color = 'var(--text-secondary)';
+    activeSummary.textContent = `${activeCount} active code${activeCount !== 1 ? 's' : ''}`;
+    controls.appendChild(activeSummary);
+
     renderLockDetailSlots(lock);
     showLockTab('slots');
 
@@ -1296,6 +1485,19 @@ function showLockDetail(entityId) {
     clearAllBtn.onclick = () => clearAllCodes(lock.entity_id);
 
     showModal('lock-detail-modal');
+}
+
+async function toggleAutoLock(entityId, enabled) {
+    try {
+        await api(`/locks/${entityId}/auto-lock`, {
+            method: 'POST',
+            body: JSON.stringify({ enabled }),
+        });
+        showToast(`Auto-lock ${enabled ? 'enabled' : 'disabled'}`, 'success');
+        await refreshLockDetail(entityId);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
 }
 
 function renderLockDetailSlots(lock) {
