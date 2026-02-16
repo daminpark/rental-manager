@@ -1248,7 +1248,13 @@ class RentalManager:
             }
 
     async def clear_all_codes(self, lock_entity_id: str) -> dict:
-        """Clear ALL code slots (1-20) on a lock. For setup use."""
+        """Clear ALL code slots (1-20) on a lock. For setup use.
+
+        Processes slots sequentially with a 2-second delay between each
+        to avoid overwhelming the Z-Wave network.
+        """
+        SLOT_DELAY = 2  # seconds between each clear
+
         async with get_session_context() as session:
             result = await session.execute(
                 select(Lock).options(selectinload(Lock.code_slots))
@@ -1258,21 +1264,22 @@ class RentalManager:
             if not lock:
                 raise ValueError(f"Lock {lock_entity_id} not found")
 
-            # Clear slots with limited concurrency to avoid Z-Wave congestion
-            semaphore = asyncio.Semaphore(3)
+            errors = []
+            cleared = 0
+            for slot_num in range(1, 21):
+                try:
+                    await self._ha_clear_code(lock.entity_id, slot_num)
+                    cleared += 1
+                    logger.debug(f"Cleared slot {slot_num} on {lock.entity_id}")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to clear slot {slot_num} on {lock.entity_id}: {e}"
+                    )
+                    errors.append(f"Slot {slot_num}: {e}")
 
-            async def _clear_one(slot_num: int) -> tuple[int, str | None]:
-                async with semaphore:
-                    try:
-                        await self._ha_clear_code(lock.entity_id, slot_num)
-                        return (slot_num, None)
-                    except Exception as e:
-                        logger.error(f"Failed to clear slot {slot_num} on {lock.entity_id}: {e}")
-                        return (slot_num, f"Slot {slot_num}: {e}")
-
-            results = await asyncio.gather(*[_clear_one(s) for s in range(1, 21)])
-            errors = [err for _, err in results if err]
-            cleared = 20 - len(errors)
+                # Stagger between slots (skip delay after the last one)
+                if slot_num < 20:
+                    await asyncio.sleep(SLOT_DELAY)
 
             # Update DB
             lock.master_code = None
