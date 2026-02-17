@@ -634,6 +634,7 @@ async def get_audit_log(
                 "details": log.details,
                 "success": log.success,
                 "error_message": log.error_message,
+                "batch_id": log.batch_id,
             }
             for log in logs
         ]

@@ -2,6 +2,7 @@
 
 import asyncio
 import random
+import uuid
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
 from typing import Optional
@@ -325,6 +326,7 @@ class RentalManager:
         STAGGER_DELAY = 8  # seconds between each lock
         action_desc = f"auto-lock {'on' if auto_lock else 'off'} + {lock_action}"
         logger.info(f"Internal locks: {action_desc} — {reason}")
+        bid = uuid.uuid4().hex[:12]
 
         INTERNAL_TYPES = ("room", "bathroom", "kitchen", "storage")
 
@@ -371,6 +373,7 @@ class RentalManager:
                     details=reason,
                     success=al_success,
                     error_message=al_error,
+                    batch_id=bid,
                 ))
 
                 # Wait before lock/unlock to let Z-Wave settle
@@ -405,6 +408,7 @@ class RentalManager:
                     details=reason,
                     success=la_success,
                     error_message=la_error,
+                    batch_id=bid,
                 ))
 
                 if not al_success:
@@ -1224,6 +1228,7 @@ class RentalManager:
             success_count = 0
             errors = []
             codes = {}
+            bid = uuid.uuid4().hex[:12]
 
             for i, lock in enumerate(locks):
                 # Stagger: 3 second delay between locks
@@ -1246,6 +1251,7 @@ class RentalManager:
                         slot_number=EMERGENCY_CODE_SLOT,
                         code=code,
                         success=True,
+                        batch_id=bid,
                     )
                     session.add(audit)
                 except Exception as e:

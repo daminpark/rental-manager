@@ -729,6 +729,8 @@ async function loadActivityView() {
             return;
         }
 
+        const groups = groupLogs(logs);
+
         const table = document.createElement('table');
         table.className = 'activity-table';
         table.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.82rem';
@@ -745,8 +747,12 @@ async function loadActivityView() {
         table.appendChild(thead);
 
         const tbody = document.createElement('tbody');
-        logs.forEach(log => {
-            tbody.appendChild(renderActivityRow(log));
+        groups.forEach(group => {
+            if (group.type === 'single') {
+                tbody.appendChild(renderActivityRow(group.log));
+            } else {
+                renderGroupedRows(tbody, group);
+            }
         });
 
         table.appendChild(tbody);
@@ -843,6 +849,91 @@ function renderActivityRow(log) {
     return tr;
 }
 
+function renderGroupedRows(tbody, group) {
+    const logs = group.logs;
+    const d = new Date(group.timestamp);
+    const allOk = logs.every(l => l.success);
+    const failCount = logs.filter(l => !l.success).length;
+    const childRows = [];
+
+    // Summary row
+    const tr = document.createElement('tr');
+    tr.style.cssText = 'border-bottom:1px solid var(--border-color,rgba(0,0,0,0.06));cursor:pointer;transition:background 0.2s';
+    if (failCount > 0) tr.style.background = 'var(--danger-bg,rgba(220,53,69,0.05))';
+
+    // Time
+    const tdTime = document.createElement('td');
+    tdTime.style.cssText = 'padding:0.4rem 0.75rem;white-space:nowrap;color:var(--text-secondary)';
+    tdTime.textContent = formatActivityTime(d);
+    tdTime.title = d.toLocaleString();
+
+    // Action — show batch label with expand arrow
+    const tdAction = document.createElement('td');
+    tdAction.style.cssText = 'padding:0.4rem 0.75rem;font-weight:500';
+    const arrow = document.createElement('span');
+    arrow.textContent = '▸ ';
+    arrow.style.cssText = 'font-size:0.7rem;color:var(--text-secondary);transition:transform 0.2s;display:inline-block';
+    tdAction.appendChild(arrow);
+    tdAction.appendChild(document.createTextNode(getBatchLabel(logs)));
+
+    // Lock — show count
+    const tdLock = document.createElement('td');
+    tdLock.style.cssText = 'padding:0.4rem 0.75rem;color:var(--text-secondary)';
+    const uniqueLocks = [...new Set(logs.map(l => l.lock_name).filter(Boolean))];
+    tdLock.textContent = uniqueLocks.length > 3
+        ? `${uniqueLocks.length} locks`
+        : uniqueLocks.map(n => n.replace(/ Lock$/, '')).join(', ');
+
+    // Details
+    const tdDetails = document.createElement('td');
+    tdDetails.style.cssText = 'padding:0.4rem 0.75rem;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    tdDetails.textContent = logs[0].details || '—';
+
+    // Status
+    const tdStatus = document.createElement('td');
+    tdStatus.style.cssText = 'padding:0.4rem 0.75rem;text-align:center;white-space:nowrap';
+    if (allOk) {
+        const dot = document.createElement('span');
+        dot.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent-green,#28a745)';
+        tdStatus.appendChild(dot);
+    } else {
+        const badge = document.createElement('span');
+        badge.style.cssText = 'font-size:0.7rem;padding:0.1rem 0.4rem;background:var(--accent-red,#dc3545);color:#fff;border-radius:4px';
+        badge.textContent = `${failCount} failed`;
+        tdStatus.appendChild(badge);
+    }
+
+    tr.appendChild(tdTime);
+    tr.appendChild(tdAction);
+    tr.appendChild(tdLock);
+    tr.appendChild(tdDetails);
+    tr.appendChild(tdStatus);
+    tbody.appendChild(tr);
+
+    // Child rows (hidden by default)
+    logs.forEach(log => {
+        const childTr = renderActivityRow(log);
+        childTr.style.display = 'none';
+        childTr.classList.add('group-child');
+        childTr.style.background = 'var(--card-bg,rgba(0,0,0,0.015))';
+        // Indent the action cell
+        const actionCell = childTr.children[1];
+        if (actionCell) actionCell.style.paddingLeft = '1.5rem';
+        childRows.push(childTr);
+        tbody.appendChild(childTr);
+    });
+
+    // Toggle expand/collapse
+    let expanded = false;
+    tr.addEventListener('click', () => {
+        expanded = !expanded;
+        arrow.style.transform = expanded ? 'rotate(90deg)' : 'rotate(0deg)';
+        childRows.forEach(child => {
+            child.style.display = expanded ? '' : 'none';
+        });
+    });
+}
+
 async function retryAuditLogEntry(log) {
     // Match the failed audit log entry to a sync retry action
     try {
@@ -893,9 +984,99 @@ function getActionLabel(action) {
         'auto_lock_changed': 'Auto-Lock Changed',
         'auto_lock_enable': 'Auto-Lock Enabled',
         'auto_lock_disable': 'Auto-Lock Disabled',
+        'whole_house_unlock': 'Whole House Unlock',
+        'whole_house_lock': 'Whole House Lock',
         'no_code_warning': 'No Code Warning',
     };
     return labels[action] || action.replace(/_/g, ' ');
+}
+
+function getBatchLabel(logs) {
+    if (!logs.length) return 'Batch Operation';
+    const action = logs[0].action;
+    const count = logs.length;
+    const lockWord = count === 1 ? 'lock' : 'locks';
+    const allOk = logs.every(l => l.success);
+    const failCount = logs.filter(l => !l.success).length;
+    const statusSuffix = allOk ? '' : ` · ${failCount} failed`;
+
+    if (action === 'emergency_code_randomized') return `Emergency Codes Randomized · ${count} ${lockWord}${statusSuffix}`;
+    if (action === 'auto_lock_enable') return `Auto-Lock Enabled · ${count} ${lockWord}${statusSuffix}`;
+    if (action === 'auto_lock_disable') return `Auto-Lock Disabled · ${count} ${lockWord}${statusSuffix}`;
+    if (action === 'whole_house_unlock') return `Whole House Unlock · ${count} ${lockWord}${statusSuffix}`;
+    if (action === 'whole_house_lock') return `Whole House Lock · ${count} ${lockWord}${statusSuffix}`;
+    if (action === 'code_activated') return `Codes Activated · ${count} ${lockWord}${statusSuffix}`;
+    if (action === 'code_deactivated') return `Codes Deactivated · ${count} ${lockWord}${statusSuffix}`;
+
+    return `${getActionLabel(action)} · ${count} ${lockWord}${statusSuffix}`;
+}
+
+function groupLogs(logs) {
+    // Group logs by batch_id (explicit) or by same action + booking within 60s (implicit)
+    const groups = [];
+    const used = new Set();
+
+    // First pass: group by batch_id
+    const batchMap = {};
+    logs.forEach((log, idx) => {
+        if (log.batch_id) {
+            if (!batchMap[log.batch_id]) batchMap[log.batch_id] = [];
+            batchMap[log.batch_id].push({ log, idx });
+        }
+    });
+    for (const [batchId, entries] of Object.entries(batchMap)) {
+        if (entries.length > 1) {
+            groups.push({
+                type: 'group',
+                logs: entries.map(e => e.log),
+                timestamp: entries[0].log.timestamp,
+            });
+            entries.forEach(e => used.add(e.idx));
+        }
+    }
+
+    // Second pass: group by same action + same booking details within 60s (no batch_id)
+    for (let i = 0; i < logs.length; i++) {
+        if (used.has(i)) continue;
+        const log = logs[i];
+        // Only try to group scheduler-fired actions (activate/deactivate)
+        if (!log.batch_id && (log.action === 'code_activated' || log.action === 'code_deactivated')) {
+            const cluster = [log];
+            const clusterIdxs = [i];
+            const t0 = new Date(log.timestamp).getTime();
+            const details0 = log.details || '';
+            for (let j = i + 1; j < logs.length; j++) {
+                if (used.has(j)) continue;
+                const other = logs[j];
+                if (other.action !== log.action) continue;
+                if (other.batch_id) continue;
+                const tOther = new Date(other.timestamp).getTime();
+                if (Math.abs(tOther - t0) > 120000) continue;  // within 2 minutes
+                const detailsOther = other.details || '';
+                if (details0 && detailsOther && details0 === detailsOther) {
+                    cluster.push(other);
+                    clusterIdxs.push(j);
+                }
+            }
+            if (cluster.length > 1) {
+                groups.push({
+                    type: 'group',
+                    logs: cluster,
+                    timestamp: cluster[0].timestamp,
+                });
+                clusterIdxs.forEach(idx => used.add(idx));
+                continue;
+            }
+        }
+        if (!used.has(i)) {
+            groups.push({ type: 'single', log, timestamp: log.timestamp });
+            used.add(i);
+        }
+    }
+
+    // Sort by timestamp descending (groups use first entry timestamp)
+    groups.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    return groups;
 }
 
 function formatActivityTime(d) {

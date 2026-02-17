@@ -258,6 +258,7 @@ class AuditLog(Base):
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    batch_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     def __repr__(self) -> str:
         return f"<AuditLog {self.timestamp} {self.action}>"
