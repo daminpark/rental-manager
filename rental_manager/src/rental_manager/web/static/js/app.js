@@ -1573,20 +1573,6 @@ function renderLockDetailControls(lock) {
     autoLockLabel.style.fontWeight = '600';
     controls.appendChild(autoLockLabel);
 
-    // Current status indicator
-    const statusLabel = document.createElement('span');
-    if (lock.auto_lock_enabled === true) {
-        statusLabel.textContent = 'On';
-        statusLabel.style.cssText = 'color:var(--accent-green,#28a745);font-weight:600;font-size:0.8rem';
-    } else if (lock.auto_lock_enabled === false) {
-        statusLabel.textContent = 'Off';
-        statusLabel.style.cssText = 'color:var(--accent-red,#dc3545);font-weight:600;font-size:0.8rem';
-    } else {
-        statusLabel.textContent = 'Unknown';
-        statusLabel.style.cssText = 'color:var(--text-secondary);font-size:0.8rem';
-    }
-    controls.appendChild(statusLabel);
-
     const autoLockOnBtn = document.createElement('button');
     autoLockOnBtn.className = `btn btn-sm ${lock.auto_lock_enabled === true ? 'btn-success' : 'btn-secondary'}`;
     autoLockOnBtn.textContent = 'On';
