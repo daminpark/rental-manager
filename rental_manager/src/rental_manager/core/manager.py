@@ -1186,8 +1186,8 @@ class RentalManager:
 
     @staticmethod
     def _generate_random_code() -> str:
-        """Generate a random 4-digit code (1000-9999, no leading zeros)."""
-        return str(random.randint(1000, 9999))
+        """Generate a random 5-digit emergency code (10000-99999)."""
+        return str(random.randint(10000, 99999))
 
     async def get_emergency_codes(self) -> list[dict]:
         """Get all emergency codes grouped by lock."""
@@ -1809,7 +1809,28 @@ class RentalManager:
         }
 
     async def _backup_emergency_codes(self) -> None:
-        """Backup emergency codes to Google Sheets."""
+        """Backup emergency codes to /share/ (synced by Google Drive Backup) and optionally Google Sheets."""
+        import json
+        from pathlib import Path
+
+        codes = await self.get_emergency_codes()
+
+        # Always save to /share/ for Google Drive Backup add-on
+        try:
+            backup_dir = Path("/share/rental_manager")
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup_file = backup_dir / "emergency_codes.json"
+            backup_data = {
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+                "house_code": self.settings.house_code,
+                "codes": codes,
+            }
+            backup_file.write_text(json.dumps(backup_data, indent=2))
+            logger.info("Emergency codes saved to %s", backup_file)
+        except Exception as e:
+            logger.error(f"Failed to save emergency codes to /share/: {e}")
+
+        # Optionally sync to Google Sheets
         try:
             from rental_manager.core.sheets_backup import SheetsBackup
             creds_path = self.settings.google_sheets_credentials
@@ -1817,7 +1838,6 @@ class RentalManager:
             if not creds_path or not spreadsheet_id:
                 return
             backup = SheetsBackup(creds_path, spreadsheet_id)
-            codes = await self.get_emergency_codes()
             backup.update_emergency_codes(codes)
             logger.info("Emergency codes backed up to Google Sheets")
         except Exception as e:

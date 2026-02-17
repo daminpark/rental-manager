@@ -1,6 +1,6 @@
 name: "Rental Manager"
 description: "Lock code manager for VBR rental properties"
-version: "0.3.7"
+version: "0.3.8"
 init: false
 slug: "rental_manager"
 url: "https://github.com/daminpark/rental-manager"
@@ -8,6 +8,8 @@ arch:
   - amd64
   - aarch64
 homeassistant_api: true
+map:
+  - share:rw
 ingress: true
 ingress_port: 8099
 panel_icon: "mdi:lock-smart"

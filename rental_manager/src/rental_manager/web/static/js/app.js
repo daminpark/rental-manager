@@ -1192,8 +1192,8 @@ function renderEmergencyCodes() {
         codeInput.style.fontSize = '1rem';
         codeInput.style.fontFamily = 'monospace';
         codeInput.style.textAlign = 'center';
-        codeInput.maxLength = 4;
-        codeInput.value = lock.emergency_code || '----';
+        codeInput.maxLength = 5;
+        codeInput.value = lock.emergency_code || '-----';
         codeInput.dataset.lockId = lock.lock_id;
         codeCell.appendChild(codeInput);
         row.appendChild(codeCell);
@@ -1228,8 +1228,8 @@ async function randomizeEmergencyCodes() {
 }
 
 async function saveEmergencyCode(lockId, code) {
-    if (!code || code.length !== 4 || !/^\d{4}$/.test(code)) {
-        showToast('Code must be 4 digits', 'error');
+    if (!code || !/^\d{4,5}$/.test(code)) {
+        showToast('Code must be 4-5 digits', 'error');
         return;
     }
     try {
