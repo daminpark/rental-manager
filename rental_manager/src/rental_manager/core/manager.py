@@ -966,15 +966,9 @@ class RentalManager:
                 # Find the active or upcoming assignment for this slot
                 active = None
                 for a in slot.assignments:
-                    if a.is_active and a.booking:
+                    if a.booking and a.activate_at <= now < a.deactivate_at:
                         active = a
                         break
-                # Fallback: find assignment whose time window covers now
-                if not active:
-                    for a in slot.assignments:
-                        if a.booking and a.activate_at <= now < a.deactivate_at:
-                            active = a
-                            break
                 # Fallback: find the next upcoming assignment
                 if not active:
                     upcoming = [
@@ -986,12 +980,14 @@ class RentalManager:
 
                 if active and active.booking:
                     b = active.booking
+                    is_now_active = active.activate_at <= now < active.deactivate_at
                     info["guest_name"] = b.guest_name
                     info["booking_id"] = b.id
                     info["check_in"] = b.check_in_date.isoformat() if b.check_in_date else None
                     info["check_out"] = b.check_out_date.isoformat() if b.check_out_date else None
                     info["calendar_id"] = b.calendar.calendar_id if b.calendar else None
-                    info["is_active"] = active.is_active
+                    info["is_active"] = is_now_active
+                    info["assigned_code"] = active.code if is_now_active else None
                 return info
 
             return [

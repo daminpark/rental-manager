@@ -1541,7 +1541,30 @@ function showLockDetail(entityId) {
     document.getElementById('lock-detail-title').textContent = lock.name;
     document.getElementById('lock-detail-entity').textContent = lock.entity_id;
 
-    // Auto-lock toggle
+    renderLockDetailControls(lock);
+    renderLockDetailSlots(lock);
+    showLockTab('slots');
+
+    const clearAllBtn = document.getElementById('clear-all-codes-btn');
+    clearAllBtn.onclick = () => clearAllCodes(lock.entity_id);
+
+    showModal('lock-detail-modal');
+}
+
+async function toggleAutoLock(entityId, enabled) {
+    try {
+        await api(`/locks/${entityId}/auto-lock`, {
+            method: 'POST',
+            body: JSON.stringify({ enabled }),
+        });
+        showToast(`Auto-lock ${enabled ? 'enabled' : 'disabled'}`, 'success');
+        await refreshLockDetail(entityId);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+function renderLockDetailControls(lock) {
     const controls = document.getElementById('lock-detail-controls');
     controls.textContent = '';
 
@@ -1549,6 +1572,20 @@ function showLockDetail(entityId) {
     autoLockLabel.textContent = 'Auto-Lock:';
     autoLockLabel.style.fontWeight = '600';
     controls.appendChild(autoLockLabel);
+
+    // Current status indicator
+    const statusLabel = document.createElement('span');
+    if (lock.auto_lock_enabled === true) {
+        statusLabel.textContent = 'On';
+        statusLabel.style.cssText = 'color:var(--accent-green,#28a745);font-weight:600;font-size:0.8rem';
+    } else if (lock.auto_lock_enabled === false) {
+        statusLabel.textContent = 'Off';
+        statusLabel.style.cssText = 'color:var(--accent-red,#dc3545);font-weight:600;font-size:0.8rem';
+    } else {
+        statusLabel.textContent = 'Unknown';
+        statusLabel.style.cssText = 'color:var(--text-secondary);font-size:0.8rem';
+    }
+    controls.appendChild(statusLabel);
 
     const autoLockOnBtn = document.createElement('button');
     autoLockOnBtn.className = `btn btn-sm ${lock.auto_lock_enabled === true ? 'btn-success' : 'btn-secondary'}`;
@@ -1574,27 +1611,6 @@ function showLockDetail(entityId) {
     activeSummary.style.color = 'var(--text-secondary)';
     activeSummary.textContent = `${activeCount} active code${activeCount !== 1 ? 's' : ''}`;
     controls.appendChild(activeSummary);
-
-    renderLockDetailSlots(lock);
-    showLockTab('slots');
-
-    const clearAllBtn = document.getElementById('clear-all-codes-btn');
-    clearAllBtn.onclick = () => clearAllCodes(lock.entity_id);
-
-    showModal('lock-detail-modal');
-}
-
-async function toggleAutoLock(entityId, enabled) {
-    try {
-        await api(`/locks/${entityId}/auto-lock`, {
-            method: 'POST',
-            body: JSON.stringify({ enabled }),
-        });
-        showToast(`Auto-lock ${enabled ? 'enabled' : 'disabled'}`, 'success');
-        await refreshLockDetail(entityId);
-    } catch (error) {
-        showToast(error.message, 'error');
-    }
 }
 
 function renderLockDetailSlots(lock) {
@@ -1602,8 +1618,14 @@ function renderLockDetailSlots(lock) {
     slotsContainer.textContent = '';
 
     lock.slots.forEach(slot => {
+        // Determine the effective code based on slot type
+        let effectiveCode = slot.assigned_code || slot.current_code || '';
+        if (slot.slot_number === 1 && lock.master_code) effectiveCode = lock.master_code;
+        if (slot.slot_number === 20 && lock.emergency_code) effectiveCode = lock.emergency_code;
+        const hasCode = !!effectiveCode;
+
         const slotDiv = document.createElement('div');
-        slotDiv.className = `code-slot ${slot.current_code ? 'active' : 'empty'}`;
+        slotDiv.className = `code-slot ${hasCode ? 'active' : 'empty'}`;
 
         const topRow = document.createElement('div');
         topRow.style.display = 'flex';
@@ -1669,7 +1691,7 @@ function renderLockDetailSlots(lock) {
         input.style.padding = '0.2rem';
         input.style.marginBottom = '0.25rem';
         input.maxLength = 8;
-        input.value = slot.current_code || '';
+        input.value = effectiveCode;
         input.placeholder = '----';
 
         const btnRow = document.createElement('div');
@@ -1744,6 +1766,7 @@ async function refreshLockDetail(entityId) {
     const lock = state.locks.find(l => l.entity_id === entityId);
     if (lock) {
         state.selectedLock = lock;
+        renderLockDetailControls(lock);
         renderLockDetailSlots(lock);
     }
     renderLocks();
