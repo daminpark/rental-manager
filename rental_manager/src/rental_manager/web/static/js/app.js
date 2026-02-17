@@ -714,17 +714,18 @@ async function loadActivityView() {
         }
     }
 
-    // Load audit log
+    // Load audit log (last 24 hours only)
     try {
-        const allLogs = await api('/audit-log?limit=150');
-        // Filter to code and auto-lock actions only (skip lock/unlock)
+        const allLogs = await api('/audit-log?limit=500');
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
         const logs = allLogs.filter(l =>
             l.action !== 'lock_lock' && l.action !== 'lock_unlock'
-        ).slice(0, 100);
+            && new Date(l.timestamp).getTime() >= cutoff
+        );
         content.textContent = '';
 
         if (logs.length === 0) {
-            content.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-secondary)">No activity yet</div>';
+            content.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-secondary)">No activity in the last 24 hours</div>';
             return;
         }
 
@@ -732,77 +733,20 @@ async function loadActivityView() {
         table.className = 'activity-table';
         table.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.82rem';
 
-        // Header
+        const thStyle = 'text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600';
         const thead = document.createElement('thead');
         thead.innerHTML = `<tr>
-            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600;white-space:nowrap">Time</th>
-            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Action</th>
-            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Lock</th>
-            <th style="text-align:left;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Details</th>
-            <th style="text-align:center;padding:0.5rem 0.75rem;border-bottom:2px solid var(--border-color,#e0e0e0);color:var(--text-secondary);font-weight:600">Status</th>
+            <th style="${thStyle};white-space:nowrap">Time</th>
+            <th style="${thStyle}">Action</th>
+            <th style="${thStyle}">Lock</th>
+            <th style="${thStyle}">Details</th>
+            <th style="${thStyle};text-align:center">Status</th>
         </tr>`;
         table.appendChild(thead);
 
         const tbody = document.createElement('tbody');
         logs.forEach(log => {
-            const tr = document.createElement('tr');
-            tr.style.cssText = 'border-bottom:1px solid var(--border-color,rgba(0,0,0,0.06))';
-            if (!log.success) {
-                tr.style.background = 'var(--danger-bg,rgba(220,53,69,0.05))';
-            }
-
-            const d = new Date(log.timestamp);
-
-            // Time cell
-            const tdTime = document.createElement('td');
-            tdTime.style.cssText = 'padding:0.4rem 0.75rem;white-space:nowrap;color:var(--text-secondary)';
-            tdTime.textContent = formatActivityTime(d);
-            tdTime.title = d.toLocaleString();
-
-            // Action cell
-            const tdAction = document.createElement('td');
-            tdAction.style.cssText = 'padding:0.4rem 0.75rem;font-weight:500';
-            const actionLabel = getActionLabel(log.action);
-            tdAction.textContent = actionLabel;
-
-            // Lock cell
-            const tdLock = document.createElement('td');
-            tdLock.style.cssText = 'padding:0.4rem 0.75rem';
-            if (log.lock_name) {
-                const lockText = log.lock_name.replace(/ Lock$/, '');
-                tdLock.textContent = lockText;
-                if (log.slot_number) {
-                    const slotSpan = document.createElement('span');
-                    slotSpan.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-left:0.25rem';
-                    slotSpan.textContent = `s${log.slot_number}`;
-                    tdLock.appendChild(slotSpan);
-                }
-            } else if (log.slot_number) {
-                tdLock.textContent = `Slot ${log.slot_number}`;
-            } else {
-                tdLock.style.color = 'var(--text-secondary)';
-                tdLock.textContent = '—';
-            }
-
-            // Details cell
-            const tdDetails = document.createElement('td');
-            tdDetails.style.cssText = 'padding:0.4rem 0.75rem;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-            tdDetails.textContent = log.details || (log.error_message ? log.error_message : '—');
-            if (log.details) tdDetails.title = log.details;
-
-            // Status cell
-            const tdStatus = document.createElement('td');
-            tdStatus.style.cssText = 'padding:0.4rem 0.75rem;text-align:center';
-            const statusDot = document.createElement('span');
-            statusDot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:${log.success ? 'var(--accent-green,#28a745)' : 'var(--accent-red,#dc3545)'}`;
-            tdStatus.appendChild(statusDot);
-
-            tr.appendChild(tdTime);
-            tr.appendChild(tdAction);
-            tr.appendChild(tdLock);
-            tr.appendChild(tdDetails);
-            tr.appendChild(tdStatus);
-            tbody.appendChild(tr);
+            tbody.appendChild(renderActivityRow(log));
         });
 
         table.appendChild(tbody);
@@ -810,6 +754,123 @@ async function loadActivityView() {
 
     } catch (err) {
         content.innerHTML = '<div style="padding:1rem;color:var(--accent-red,#dc3545)">Failed to load activity log</div>';
+    }
+}
+
+function renderActivityRow(log) {
+    const tr = document.createElement('tr');
+    tr.style.cssText = 'border-bottom:1px solid var(--border-color,rgba(0,0,0,0.06));transition:background 0.3s';
+    if (!log.success) {
+        tr.style.background = 'var(--danger-bg,rgba(220,53,69,0.05))';
+    }
+
+    const d = new Date(log.timestamp);
+
+    // Time
+    const tdTime = document.createElement('td');
+    tdTime.style.cssText = 'padding:0.4rem 0.75rem;white-space:nowrap;color:var(--text-secondary)';
+    tdTime.textContent = formatActivityTime(d);
+    tdTime.title = d.toLocaleString();
+
+    // Action
+    const tdAction = document.createElement('td');
+    tdAction.style.cssText = 'padding:0.4rem 0.75rem;font-weight:500';
+    tdAction.textContent = getActionLabel(log.action);
+
+    // Lock
+    const tdLock = document.createElement('td');
+    tdLock.style.cssText = 'padding:0.4rem 0.75rem';
+    if (log.lock_name) {
+        tdLock.textContent = log.lock_name.replace(/ Lock$/, '');
+        if (log.slot_number) {
+            const slotSpan = document.createElement('span');
+            slotSpan.style.cssText = 'color:var(--text-secondary);font-size:0.75rem;margin-left:0.25rem';
+            slotSpan.textContent = `s${log.slot_number}`;
+            tdLock.appendChild(slotSpan);
+        }
+    } else if (log.slot_number) {
+        tdLock.textContent = `Slot ${log.slot_number}`;
+    } else {
+        tdLock.style.color = 'var(--text-secondary)';
+        tdLock.textContent = '—';
+    }
+
+    // Details
+    const tdDetails = document.createElement('td');
+    tdDetails.style.cssText = 'padding:0.4rem 0.75rem;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    tdDetails.textContent = log.details || (log.error_message ? log.error_message : '—');
+    if (log.details) tdDetails.title = log.details;
+
+    // Status
+    const tdStatus = document.createElement('td');
+    tdStatus.style.cssText = 'padding:0.4rem 0.75rem;text-align:center;white-space:nowrap';
+
+    if (log.success) {
+        const dot = document.createElement('span');
+        dot.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent-green,#28a745)';
+        tdStatus.appendChild(dot);
+    } else {
+        // Failed — show retry button
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'btn btn-sm';
+        retryBtn.style.cssText = 'font-size:0.7rem;padding:0.15rem 0.5rem;background:var(--accent-red,#dc3545);color:#fff;border:none;border-radius:4px;cursor:pointer';
+        retryBtn.textContent = 'Retry';
+        retryBtn.addEventListener('click', async () => {
+            retryBtn.disabled = true;
+            retryBtn.textContent = '...';
+            const ok = await retryAuditLogEntry(log);
+            if (ok) {
+                // Turn row green
+                tr.style.background = 'rgba(40,167,69,0.08)';
+                tdStatus.textContent = '';
+                const dot = document.createElement('span');
+                dot.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent-green,#28a745)';
+                tdStatus.appendChild(dot);
+                loadSyncStatus();
+            } else {
+                retryBtn.disabled = false;
+                retryBtn.textContent = 'Retry';
+            }
+        });
+        tdStatus.appendChild(retryBtn);
+    }
+
+    tr.appendChild(tdTime);
+    tr.appendChild(tdAction);
+    tr.appendChild(tdLock);
+    tr.appendChild(tdDetails);
+    tr.appendChild(tdStatus);
+    return tr;
+}
+
+async function retryAuditLogEntry(log) {
+    // Match the failed audit log entry to a sync retry action
+    try {
+        if (log.action === 'code_sync_failed' && log.lock_id && log.slot_number) {
+            // Find the lock entity_id from our state
+            const lock = state.locks.find(l => l.id === log.lock_id);
+            if (lock) {
+                const result = await api(`/sync-status/retry/${lock.entity_id}/${log.slot_number}`, { method: 'POST' });
+                if (result.success) {
+                    showToast('Retry succeeded', 'success');
+                    return true;
+                }
+                showToast(`Retry failed: ${result.error}`, 'error');
+                return false;
+            }
+        }
+        // For other failed actions, try retry-all as fallback
+        const result = await api('/sync-status/retry-all', { method: 'POST' });
+        const succeeded = result.results ? result.results.filter(r => r.success).length : 0;
+        if (succeeded > 0) {
+            showToast(`Retry: ${succeeded} succeeded`, 'success');
+            return true;
+        }
+        showToast('No retryable operations found', 'info');
+        return false;
+    } catch (error) {
+        showToast('Retry failed: ' + error.message, 'error');
+        return false;
     }
 }
 
@@ -891,7 +952,7 @@ function renderFailedSlotRow(slot) {
     retryBtn.className = 'btn btn-sm btn-secondary';
     retryBtn.style.cssText = 'font-size:0.65rem;padding:0.15rem 0.4rem;white-space:nowrap';
     retryBtn.textContent = 'Retry';
-    retryBtn.addEventListener('click', () => retrySyncSlot(slot.lock_entity_id, slot.slot_number));
+    retryBtn.addEventListener('click', () => retrySyncSlot(slot.lock_entity_id, slot.slot_number, row, retryBtn));
     row.appendChild(retryBtn);
 
     return row;
@@ -937,7 +998,7 @@ function renderFailedOpRow(op) {
     retryBtn.className = 'btn btn-sm btn-secondary';
     retryBtn.style.cssText = 'font-size:0.65rem;padding:0.15rem 0.4rem;white-space:nowrap';
     retryBtn.textContent = 'Retry';
-    retryBtn.addEventListener('click', () => retryFailedOp(op.id));
+    retryBtn.addEventListener('click', () => retryFailedOp(op.id, row, retryBtn));
     btnGroup.appendChild(retryBtn);
 
     const dismissBtn = document.createElement('button');
@@ -953,27 +1014,51 @@ function renderFailedOpRow(op) {
     return row;
 }
 
-async function retrySyncSlot(lockEntityId, slotNumber) {
+async function retrySyncSlot(lockEntityId, slotNumber, row, retryBtn) {
     try {
+        retryBtn.disabled = true;
+        retryBtn.textContent = '...';
         const result = await api(`/sync-status/retry/${lockEntityId}/${slotNumber}`, {
             method: 'POST',
         });
-        showToast(result.success ? 'Retry started' : `Retry failed: ${result.error}`,
-            result.success ? 'success' : 'error');
-        await loadSyncStatus();
+        if (result.success) {
+            showToast('Retry succeeded', 'success');
+            row.style.cssText = row.style.cssText.replace(/background:[^;]+/, 'background:rgba(40,167,69,0.1)');
+            row.style.borderColor = 'rgba(40,167,69,0.3)';
+            retryBtn.remove();
+            await loadSyncStatus();
+        } else {
+            showToast(`Retry failed: ${result.error}`, 'error');
+            retryBtn.disabled = false;
+            retryBtn.textContent = 'Retry';
+        }
     } catch (error) {
         showToast('Retry failed: ' + error.message, 'error');
+        retryBtn.disabled = false;
+        retryBtn.textContent = 'Retry';
     }
 }
 
-async function retryFailedOp(opId) {
+async function retryFailedOp(opId, row, retryBtn) {
     try {
+        retryBtn.disabled = true;
+        retryBtn.textContent = '...';
         const result = await api(`/sync-status/retry-op/${opId}`, { method: 'POST' });
-        showToast(result.success ? 'Retry succeeded' : `Retry failed: ${result.error}`,
-            result.success ? 'success' : 'error');
-        await loadSyncStatus();
+        if (result.success) {
+            showToast('Retry succeeded', 'success');
+            row.style.cssText = row.style.cssText.replace(/background:[^;]+/, 'background:rgba(40,167,69,0.1)');
+            row.style.borderColor = 'rgba(40,167,69,0.3)';
+            retryBtn.parentElement.remove();
+            await loadSyncStatus();
+        } else {
+            showToast(`Retry failed: ${result.error}`, 'error');
+            retryBtn.disabled = false;
+            retryBtn.textContent = 'Retry';
+        }
     } catch (error) {
         showToast('Retry failed: ' + error.message, 'error');
+        retryBtn.disabled = false;
+        retryBtn.textContent = 'Retry';
     }
 }
 
