@@ -410,6 +410,62 @@ class CodeScheduler:
 
         return activate_job_id, deactivate_job_id
 
+    def schedule_deactivation_only(
+        self,
+        lock_entity_id: str,
+        slot_number: int,
+        booking_uid: str,
+        deactivate_at: datetime,
+    ) -> str:
+        """Schedule only a deactivation (no activation).
+
+        Used during rehydration for codes that are already active on the lock.
+        We skip the redundant activation and only ensure the deactivation fires.
+
+        Args:
+            lock_entity_id: Lock entity ID
+            slot_number: Slot number
+            booking_uid: Booking UID
+            deactivate_at: When to deactivate
+
+        Returns:
+            The deactivation job ID
+        """
+        now = datetime.now()
+
+        deactivate_job_id = (
+            f"deactivate_{lock_entity_id}_{slot_number}_{booking_uid}"
+        )
+
+        if deactivate_at <= now:
+            # Past-due deactivation: queue for sequential catch-up
+            self._catchup_queue.put_nowait((
+                "deactivate",
+                (lock_entity_id, slot_number, booking_uid),
+            ))
+        else:
+            self._scheduler.add_job(
+                self._handle_deactivate,
+                DateTrigger(run_date=deactivate_at),
+                args=[lock_entity_id, slot_number, booking_uid],
+                id=deactivate_job_id,
+                replace_existing=True,
+            )
+            self._scheduled_jobs[deactivate_job_id] = ScheduledJob(
+                job_id=deactivate_job_id,
+                job_type=JobType.DEACTIVATE_CODE,
+                run_at=deactivate_at,
+                lock_entity_id=lock_entity_id,
+                slot_number=slot_number,
+                booking_uid=booking_uid,
+            )
+
+        logger.info(
+            f"Scheduled deactivation-only for {lock_entity_id} slot {slot_number} "
+            f"at {deactivate_at} (code already active)"
+        )
+        return deactivate_job_id
+
     def cancel_job(self, job_id: str) -> bool:
         """Cancel a scheduled job.
 

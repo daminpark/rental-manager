@@ -128,12 +128,18 @@ class RentalManager:
         APScheduler DateTrigger jobs are in-memory only and lost on restart.
         This reads all code assignments whose deactivate_at is still in the
         future and re-schedules them so activations/deactivations fire on time.
+
+        If activate_at is already past, the code should already be on the lock
+        from before the restart — we only schedule the future deactivation
+        (no redundant re-activation).  If activate_at is still in the future,
+        we schedule both activation and deactivation as normal.
         """
         if not self._scheduler:
             return
 
         now = datetime.now()
         scheduled_count = 0
+        deactivate_only_count = 0
 
         async with get_session_context() as session:
             # Get all assignments that haven't fully expired yet
@@ -161,21 +167,33 @@ class RentalManager:
                 lock = assignment.code_slot.lock
                 slot_number = assignment.code_slot.slot_number
 
-                entry = CodeScheduleEntry(
-                    lock_entity_id=lock.entity_id,
-                    slot_number=slot_number,
-                    code=code,
-                    activate_at=assignment.activate_at,
-                    deactivate_at=assignment.deactivate_at,
-                    booking_uid=booking.uid,
-                    calendar_id=booking.calendar.calendar_id,
-                    guest_name=booking.guest_name,
-                )
-                self._scheduler.schedule_code(entry)
-                scheduled_count += 1
+                if assignment.activate_at <= now:
+                    # Code should already be on the lock — only schedule deactivation.
+                    self._scheduler.schedule_deactivation_only(
+                        lock_entity_id=lock.entity_id,
+                        slot_number=slot_number,
+                        booking_uid=booking.uid,
+                        deactivate_at=assignment.deactivate_at,
+                    )
+                    deactivate_only_count += 1
+                else:
+                    # Activation is still in the future — schedule both.
+                    entry = CodeScheduleEntry(
+                        lock_entity_id=lock.entity_id,
+                        slot_number=slot_number,
+                        code=code,
+                        activate_at=assignment.activate_at,
+                        deactivate_at=assignment.deactivate_at,
+                        booking_uid=booking.uid,
+                        calendar_id=booking.calendar.calendar_id,
+                        guest_name=booking.guest_name,
+                    )
+                    self._scheduler.schedule_code(entry)
+                    scheduled_count += 1
 
         logger.info(
-            f"Re-hydrated scheduler with {scheduled_count} code assignments from DB"
+            f"Re-hydrated scheduler: {scheduled_count} future activations, "
+            f"{deactivate_only_count} deactivations-only (already active)"
         )
 
     async def stop(self) -> None:

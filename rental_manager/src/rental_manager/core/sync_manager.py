@@ -170,8 +170,15 @@ class SyncManager:
                 await self._set_code(
                     slot.lock_entity_id, slot.slot_number, slot.target_code
                 )
-                slot.state = SyncState.SETTING
-                slot.started_at = datetime.now()
+                # Treat successful API call as confirmation
+                slot.state = SyncState.ACTIVE
+                slot.current_code = slot.target_code
+                slot.started_at = None
+                slot.last_error = None
+                logger.info(
+                    f"Code re-set successfully on {slot.lock_entity_id} slot {slot.slot_number} "
+                    f"(retry {slot.retry_count}/{self._max_retries})"
+                )
             else:
                 # We were clearing, and it should be clear now
                 slot.state = SyncState.IDLE
@@ -228,8 +235,16 @@ class SyncManager:
 
         try:
             await self._set_code(lock_entity_id, slot_number, code)
-            # Move to confirming state - we'll wait for confirmation or timeout
-            slot.state = SyncState.CONFIRMING
+            # Treat a successful API call (HTTP 200) as confirmation.
+            # We don't have a Z-Wave event listener to confirm the code
+            # was actually programmed, so this is the best we can do.
+            slot.state = SyncState.ACTIVE
+            slot.current_code = code
+            slot.started_at = None
+            slot.last_error = None
+            logger.info(
+                f"Code set successfully on {lock_entity_id} slot {slot_number}"
+            )
             return SyncResult(success=True, state=slot.state)
         except Exception as e:
             slot.last_error = str(e)
