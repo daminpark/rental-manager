@@ -57,6 +57,9 @@ class CodeScheduleEntry:
 class CodeScheduler:
     """Manages scheduling of code activations and deactivations."""
 
+    # Delay between consecutive catch-up Z-Wave operations (seconds).
+    CATCHUP_STAGGER = 8
+
     def __init__(
         self,
         on_activate: Callable[[str, int, str, str], Awaitable[None]],
@@ -97,6 +100,10 @@ class CodeScheduler:
         self._scheduler = AsyncIOScheduler()
         self._scheduled_jobs: dict[str, ScheduledJob] = {}
 
+        # Queue for catch-up operations processed sequentially with stagger.
+        self._catchup_queue: asyncio.Queue[tuple] = asyncio.Queue()
+        self._catchup_task: Optional[asyncio.Task] = None
+
     def start(self) -> None:
         """Start the scheduler."""
         # Add recurring calendar poll job
@@ -117,12 +124,46 @@ class CodeScheduler:
             )
 
         self._scheduler.start()
+
+        # Start catch-up queue processor
+        self._catchup_task = asyncio.create_task(self._process_catchup_queue())
+
         logger.info("Scheduler started")
 
     def stop(self) -> None:
         """Stop the scheduler."""
         self._scheduler.shutdown(wait=False)
+        if self._catchup_task:
+            self._catchup_task.cancel()
         logger.info("Scheduler stopped")
+
+    async def _process_catchup_queue(self) -> None:
+        """Process catch-up operations sequentially with stagger delays.
+
+        Past-due activations/deactivations are queued here instead of being
+        fired concurrently, preventing Z-Wave mesh flooding on startup.
+        """
+        while True:
+            try:
+                op_type, args = await self._catchup_queue.get()
+                if op_type == "activate":
+                    await self._handle_activate(*args)
+                elif op_type == "deactivate":
+                    await self._handle_deactivate(*args)
+                elif op_type == "finalize":
+                    await self._handle_finalize(*args)
+                elif op_type == "wh_checkin":
+                    await self._handle_whole_house_checkin(*args)
+                elif op_type == "wh_checkout":
+                    await self._handle_whole_house_checkout(*args)
+                self._catchup_queue.task_done()
+                # Stagger between operations to avoid overwhelming Z-Wave
+                if not self._catchup_queue.empty():
+                    await asyncio.sleep(self.CATCHUP_STAGGER)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in catch-up queue: {e}")
 
     async def _handle_emergency_rotate(self) -> None:
         """Handle weekly emergency code rotation."""
@@ -223,7 +264,7 @@ class CodeScheduler:
         checkin_time = datetime.combine(check_in_date, datetime.min.time().replace(hour=14, minute=30))
 
         if checkin_time <= now:
-            asyncio.create_task(self._handle_whole_house_checkin(booking_uid))
+            self._catchup_queue.put_nowait(("wh_checkin", (booking_uid,)))
         else:
             self._scheduler.add_job(
                 self._handle_whole_house_checkin,
@@ -244,7 +285,7 @@ class CodeScheduler:
         checkout_time = datetime.combine(check_out_date, datetime.min.time().replace(hour=11, minute=30))
 
         if checkout_time <= now:
-            asyncio.create_task(self._handle_whole_house_checkout(booking_uid))
+            self._catchup_queue.put_nowait(("wh_checkout", (booking_uid,)))
         else:
             self._scheduler.add_job(
                 self._handle_whole_house_checkout,
@@ -270,10 +311,10 @@ class CodeScheduler:
         now = datetime.now()
 
         if finalize_at <= now:
-            # Already past finalization time, trigger immediately
-            asyncio.create_task(
-                self._handle_finalize(booking_uid, calendar_id)
-            )
+            # Already past finalization time, queue for catch-up
+            self._catchup_queue.put_nowait((
+                "finalize", (booking_uid, calendar_id),
+            ))
         else:
             self._scheduler.add_job(
                 self._handle_finalize,
@@ -309,15 +350,11 @@ class CodeScheduler:
         )
 
         if entry.activate_at <= now:
-            # Should already be active, trigger immediately
-            asyncio.create_task(
-                self._handle_activate(
-                    entry.lock_entity_id,
-                    entry.slot_number,
-                    entry.code,
-                    entry.booking_uid,
-                )
-            )
+            # Past-due: queue for sequential catch-up (avoids Z-Wave flooding)
+            self._catchup_queue.put_nowait((
+                "activate",
+                (entry.lock_entity_id, entry.slot_number, entry.code, entry.booking_uid),
+            ))
         else:
             self._scheduler.add_job(
                 self._handle_activate,
@@ -348,12 +385,11 @@ class CodeScheduler:
         )
 
         if entry.deactivate_at <= now:
-            # Should already be deactivated
-            asyncio.create_task(
-                self._handle_deactivate(
-                    entry.lock_entity_id, entry.slot_number, entry.booking_uid
-                )
-            )
+            # Past-due deactivation: queue for sequential catch-up
+            self._catchup_queue.put_nowait((
+                "deactivate",
+                (entry.lock_entity_id, entry.slot_number, entry.booking_uid),
+            ))
         else:
             self._scheduler.add_job(
                 self._handle_deactivate,
@@ -420,10 +456,11 @@ class CodeScheduler:
 
         now = datetime.now()
         if new_time <= now:
-            # Trigger immediately
-            asyncio.create_task(
-                self._handle_activate(lock_entity_id, slot_number, code, booking_uid)
-            )
+            # Past-due: queue for sequential catch-up
+            self._catchup_queue.put_nowait((
+                "activate",
+                (lock_entity_id, slot_number, code, booking_uid),
+            ))
         else:
             self._scheduler.add_job(
                 self._handle_activate,
@@ -465,10 +502,11 @@ class CodeScheduler:
 
         now = datetime.now()
         if new_time <= now:
-            # Trigger immediately
-            asyncio.create_task(
-                self._handle_deactivate(lock_entity_id, slot_number, booking_uid)
-            )
+            # Past-due: queue for sequential catch-up
+            self._catchup_queue.put_nowait((
+                "deactivate",
+                (lock_entity_id, slot_number, booking_uid),
+            ))
         else:
             self._scheduler.add_job(
                 self._handle_deactivate,

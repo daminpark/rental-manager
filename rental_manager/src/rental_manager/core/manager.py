@@ -114,10 +114,69 @@ class RentalManager:
         if self._scheduler:
             self._scheduler.start()
 
+        # Re-hydrate scheduler from existing DB assignments (survives restart)
+        await self._rehydrate_scheduler()
+
         # Initial calendar poll
         await self._poll_calendars()
 
         logger.info("Rental manager started")
+
+    async def _rehydrate_scheduler(self) -> None:
+        """Re-load pending code assignments from DB into the scheduler.
+
+        APScheduler DateTrigger jobs are in-memory only and lost on restart.
+        This reads all code assignments whose deactivate_at is still in the
+        future and re-schedules them so activations/deactivations fire on time.
+        """
+        if not self._scheduler:
+            return
+
+        now = datetime.now()
+        scheduled_count = 0
+
+        async with get_session_context() as session:
+            # Get all assignments that haven't fully expired yet
+            result = await session.execute(
+                select(CodeAssignment)
+                .options(
+                    joinedload(CodeAssignment.code_slot).joinedload(CodeSlot.lock),
+                    joinedload(CodeAssignment.booking).joinedload(Booking.calendar),
+                )
+                .where(CodeAssignment.deactivate_at > now)
+            )
+            assignments = result.unique().scalars().all()
+
+            for assignment in assignments:
+                booking = assignment.booking
+                if not booking or not booking.calendar:
+                    continue
+                if booking.is_blocked or booking.code_disabled:
+                    continue
+
+                code = assignment.code
+                if not code:
+                    continue
+
+                lock = assignment.code_slot.lock
+                slot_number = assignment.code_slot.slot_number
+
+                entry = CodeScheduleEntry(
+                    lock_entity_id=lock.entity_id,
+                    slot_number=slot_number,
+                    code=code,
+                    activate_at=assignment.activate_at,
+                    deactivate_at=assignment.deactivate_at,
+                    booking_uid=booking.uid,
+                    calendar_id=booking.calendar.calendar_id,
+                    guest_name=booking.guest_name,
+                )
+                self._scheduler.schedule_code(entry)
+                scheduled_count += 1
+
+        logger.info(
+            f"Re-hydrated scheduler with {scheduled_count} code assignments from DB"
+        )
 
     async def stop(self) -> None:
         """Stop the manager."""
