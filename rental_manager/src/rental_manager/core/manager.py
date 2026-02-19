@@ -573,22 +573,39 @@ class RentalManager:
                 logger.info(f"Skipping activation for disabled booking {booking_uid}")
                 return
 
-            # Guard: skip if same code already active on another slot of this lock
+            # Guard: skip if same code already active on another slot of this lock.
+            # Check both DB CodeSlot.current_code AND CodeAssignment time windows
+            # to handle concurrent activations (same guest, multiple rooms).
             lock_result = await session.execute(
-                select(Lock).options(selectinload(Lock.code_slots))
-                .where(Lock.entity_id == lock_entity_id)
+                select(Lock).options(
+                    selectinload(Lock.code_slots).selectinload(CodeSlot.assignments)
+                ).where(Lock.entity_id == lock_entity_id)
             )
             lock = lock_result.scalar_one_or_none()
             if lock:
+                now = datetime.utcnow()
                 for slot in lock.code_slots:
-                    if (slot.slot_number != slot_number
-                            and slot.current_code == code
+                    if slot.slot_number == slot_number:
+                        continue
+                    # Check 1: DB current_code already set (previous activation completed)
+                    if (slot.current_code == code
                             and slot.sync_state == CodeSyncState.ACTIVE.value):
                         logger.info(
                             f"Skipping duplicate code {code} on {lock_entity_id} slot {slot_number} "
                             f"— already active on slot {slot.slot_number}"
                         )
                         return
+                    # Check 2: another assignment with same code in its active window
+                    # (handles concurrent activations at same timestamp)
+                    for assignment in slot.assignments:
+                        if (assignment.code == code
+                                and assignment.activate_at <= now < assignment.deactivate_at):
+                            logger.info(
+                                f"Skipping duplicate code {code} on {lock_entity_id} slot {slot_number} "
+                                f"— concurrent assignment on slot {slot.slot_number} "
+                                f"(booking {assignment.booking_id})"
+                            )
+                            return
 
         details = self._booking_details(booking)
 
@@ -602,12 +619,20 @@ class RentalManager:
                 lock_entity_id, slot_number, code, booking_uid
             )
 
-        # Log to audit
+        # Update DB CodeSlot to reflect the activation
         async with get_session_context() as session:
             result = await session.execute(
-                select(Lock).where(Lock.entity_id == lock_entity_id)
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
             )
             lock = result.scalar_one_or_none()
+
+            if lock:
+                for slot in lock.code_slots:
+                    if slot.slot_number == slot_number:
+                        slot.current_code = code
+                        slot.sync_state = CodeSyncState.ACTIVE.value
+                        break
 
             audit = AuditLog(
                 action="code_activated",
@@ -632,7 +657,7 @@ class RentalManager:
         if self._sync_manager:
             await self._sync_manager.clear_code(lock_entity_id, slot_number, booking_uid)
 
-        # Log to audit
+        # Update DB CodeSlot and log to audit
         async with get_session_context() as session:
             booking_result = await session.execute(
                 select(Booking)
@@ -643,9 +668,17 @@ class RentalManager:
             details = self._booking_details(booking)
 
             result = await session.execute(
-                select(Lock).where(Lock.entity_id == lock_entity_id)
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
             )
             lock = result.scalar_one_or_none()
+
+            if lock:
+                for slot in lock.code_slots:
+                    if slot.slot_number == slot_number:
+                        slot.current_code = None
+                        slot.sync_state = CodeSyncState.IDLE.value
+                        break
 
             audit = AuditLog(
                 action="code_deactivated",
