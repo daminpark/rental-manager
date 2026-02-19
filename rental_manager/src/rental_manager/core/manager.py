@@ -1011,16 +1011,19 @@ class RentalManager:
             # If this code is currently active on a lock, clear it
             if assignment.activate_at <= now < assignment.deactivate_at:
                 lock = assignment.code_slot.lock
+                slot = assignment.code_slot
                 if lock and self._sync_manager:
                     logger.info(
                         f"Clearing active code from {lock.entity_id} slot "
-                        f"{assignment.code_slot.slot_number} (cancelled booking)"
+                        f"{slot.slot_number} (cancelled booking)"
                     )
                     await self._sync_manager.clear_code(
                         lock.entity_id,
-                        assignment.code_slot.slot_number,
+                        slot.slot_number,
                         booking.uid,
                     )
+                    slot.current_code = None
+                    slot.sync_state = CodeSyncState.IDLE.value
             await session.delete(assignment)
 
         # Delete time overrides
@@ -1797,10 +1800,13 @@ class RentalManager:
             cleared_count = 0
             for assignment in booking.code_assignments:
                 lock = assignment.code_slot.lock
-                slot_num = assignment.code_slot.slot_number
+                slot = assignment.code_slot
+                slot_num = slot.slot_number
                 if assignment.is_active:
                     try:
                         await self._ha_clear_code(lock.entity_id, slot_num)
+                        slot.current_code = None
+                        slot.sync_state = CodeSyncState.IDLE.value
                         cleared_count += 1
                     except Exception as e:
                         logger.error(
