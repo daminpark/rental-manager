@@ -2402,6 +2402,69 @@ class RentalManager:
                 "notes": override.notes,
             }
 
+    async def resync_all_codes(self) -> dict:
+        """Re-sync all lock codes: set codes that should be active, clear those that shouldn't.
+
+        Ensures the physical Z-Wave locks match the expected state from assignments.
+        """
+        now = datetime.utcnow()
+        set_count = 0
+        clear_count = 0
+        errors = []
+
+        async with get_session_context() as session:
+            # Get all locks with their slots and assignments
+            result = await session.execute(
+                select(Lock).options(
+                    selectinload(Lock.code_slots).selectinload(CodeSlot.assignments).joinedload(CodeAssignment.booking)
+                )
+            )
+            locks = result.unique().scalars().all()
+
+            for lock in locks:
+                for slot in lock.code_slots:
+                    if slot.slot_number in (MASTER_CODE_SLOT, EMERGENCY_CODE_SLOT):
+                        continue
+
+                    # Find active assignment for this slot
+                    active_assignment = None
+                    for a in slot.assignments:
+                        if a.code and a.activate_at <= now < a.deactivate_at:
+                            if a.booking and not a.booking.code_disabled:
+                                active_assignment = a
+                                break
+
+                    if active_assignment:
+                        # Should be coded — send set_code
+                        code = active_assignment.code
+                        try:
+                            if self._sync_manager:
+                                await self._sync_manager.set_code(
+                                    lock.entity_id, slot.slot_number, code,
+                                    active_assignment.booking.uid if active_assignment.booking else ""
+                                )
+                            slot.current_code = code
+                            slot.sync_state = CodeSyncState.ACTIVE.value
+                            set_count += 1
+                            logger.info(f"Re-sync: set {code} on {lock.entity_id} slot {slot.slot_number}")
+                        except Exception as e:
+                            errors.append(f"{lock.entity_id} slot {slot.slot_number}: {e}")
+                    else:
+                        # Should be empty — send clear
+                        try:
+                            if self._sync_manager:
+                                await self._sync_manager.clear_code(
+                                    lock.entity_id, slot.slot_number, ""
+                                )
+                            slot.current_code = None
+                            slot.sync_state = CodeSyncState.IDLE.value
+                            clear_count += 1
+                            logger.info(f"Re-sync: cleared {lock.entity_id} slot {slot.slot_number}")
+                        except Exception as e:
+                            errors.append(f"{lock.entity_id} slot {slot.slot_number}: {e}")
+
+        return {"set": set_count, "cleared": clear_count, "errors": errors}
+
     async def lock_action(self, lock_entity_id: str, action: str) -> dict:
         """Perform a lock/unlock action."""
         if action == "lock":

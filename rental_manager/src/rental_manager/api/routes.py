@@ -121,6 +121,12 @@ async def retry_all_failed(manager: RentalManager = Depends(get_manager)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/sync-status/resync")
+async def resync_all_codes(manager: RentalManager = Depends(get_manager)):
+    """Re-sync all lock codes: set active codes, clear inactive slots."""
+    return await manager.resync_all_codes()
+
+
 @router.post("/sync-status/retry-op/{op_id}")
 async def retry_failed_op(
     op_id: int,
