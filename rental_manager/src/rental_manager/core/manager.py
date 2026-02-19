@@ -1622,10 +1622,12 @@ class RentalManager:
 
             errors = []
             cleared = 0
+            cleared_slots = set()
             for slot_num in range(1, 21):
                 try:
                     await self._ha_clear_code(lock.entity_id, slot_num)
                     cleared += 1
+                    cleared_slots.add(slot_num)
                     logger.debug(f"Cleared slot {slot_num} on {lock.entity_id}")
                 except Exception as e:
                     logger.error(
@@ -1633,12 +1635,15 @@ class RentalManager:
                     )
                     errors.append(f"Slot {slot_num}: {e}")
 
-            # Update DB
-            lock.master_code = None
-            lock.emergency_code = None
+            # Update DB — only for slots that were successfully cleared
+            if MASTER_CODE_SLOT in cleared_slots:
+                lock.master_code = None
+            if EMERGENCY_CODE_SLOT in cleared_slots:
+                lock.emergency_code = None
             for slot in lock.code_slots:
-                slot.current_code = None
-                slot.sync_state = CodeSyncState.IDLE.value
+                if slot.slot_number in cleared_slots:
+                    slot.current_code = None
+                    slot.sync_state = CodeSyncState.IDLE.value
 
             session.add(AuditLog(
                 action="clear_all_codes",
@@ -1807,13 +1812,13 @@ class RentalManager:
                         await self._ha_clear_code(lock.entity_id, slot_num)
                         slot.current_code = None
                         slot.sync_state = CodeSyncState.IDLE.value
+                        assignment.is_active = False
                         cleared_count += 1
                     except Exception as e:
                         logger.error(
                             f"Failed to clear slot {slot_num} on {lock.entity_id} "
                             f"while disabling booking {booking_id}: {e}"
                         )
-                assignment.is_active = False
 
             # Cancel pending activation jobs
             if self._scheduler:
@@ -1986,10 +1991,10 @@ class RentalManager:
 
                 if now >= assignment.activate_at and now < assignment.deactivate_at:
                     # Within active window — re-set on lock immediately
-                    assignment.is_active = True
                     if not booking.code_disabled:
                         try:
                             await self._set_code_with_retry(lock.entity_id, slot_num, code)
+                            assignment.is_active = True
                             slot.current_code = code
                             slot.sync_state = CodeSyncState.ACTIVE.value
                             updated_count += 1
