@@ -40,6 +40,8 @@ class HAEventListener:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._msg_id = 0
+        # Maps device_id -> lock entity_id (built at connect time)
+        self._device_to_entity: dict[str, str] = {}
 
     def _next_id(self) -> int:
         self._msg_id += 1
@@ -98,6 +100,9 @@ class HAEventListener:
                 return
             logger.info("HA websocket authenticated")
 
+            # Build device_id -> entity_id mapping for lock entities
+            await self._build_device_map(ws)
+
             # Subscribe to zwave_js_notification events
             sub_id = self._next_id()
             await ws.send(json.dumps({
@@ -134,6 +139,27 @@ class HAEventListener:
                     pong = self._next_id()
                     await ws.send(json.dumps({"id": pong, "type": "ping"}))
                     await asyncio.wait_for(ws.recv(), timeout=10)
+
+    async def _build_device_map(self, ws) -> None:
+        """Fetch entity registry to build device_id -> lock entity_id mapping."""
+        reg_id = self._next_id()
+        await ws.send(json.dumps({
+            "id": reg_id,
+            "type": "config/entity_registry/list",
+        }))
+        result = json.loads(await ws.recv())
+        if not result.get("success"):
+            logger.warning("Failed to fetch entity registry: %s", result)
+            return
+
+        self._device_to_entity.clear()
+        for entry in result.get("result", []):
+            entity_id = entry.get("entity_id", "")
+            device_id = entry.get("device_id")
+            if entity_id.startswith("lock.") and device_id:
+                self._device_to_entity[device_id] = entity_id
+
+        logger.info("Built device map: %d lock entities", len(self._device_to_entity))
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
         """Handle an event from HA."""
@@ -176,17 +202,20 @@ class HAEventListener:
 
         method, label = event_info
 
-        # Get entity_id - try multiple field names
+        # Get entity_id - resolve from device_id if needed
         entity_id = data.get("entity_id")
         node_id = data.get("node_id")
         device_id = data.get("device_id")
+
+        if not entity_id and device_id:
+            entity_id = self._device_to_entity.get(device_id)
 
         # Extract code slot from parameters if available
         params = data.get("parameters", {})
         code_slot = params.get("userId")
 
         if not entity_id:
-            logger.warning("Z-Wave notification without entity_id: node=%s device=%s event=%s", node_id, device_id, event_code)
+            logger.warning("Z-Wave notification: could not resolve entity_id (node=%s device=%s event=%s)", node_id, device_id, event_code)
             return
 
         # Only process unlock events (even codes = unlock)
