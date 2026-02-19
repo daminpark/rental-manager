@@ -140,6 +140,7 @@ class HAEventListener:
         event_type = event.get("event_type", "")
 
         if event_type == "zwave_js_notification":
+            logger.debug("Raw zwave_js_notification: %s", json.dumps(event.get("data", {}))[:500])
             await self._handle_zwave_notification(event)
         elif event_type == "state_changed":
             await self._handle_state_changed(event)
@@ -148,30 +149,44 @@ class HAEventListener:
         """Handle a Z-Wave JS notification event (lock access control)."""
         data = event.get("data", {})
 
-        # Only care about Notification CC, type 6 (Access Control)
         command_class = data.get("command_class")
+        command_class_name = data.get("command_class_name", "")
         cc_type = data.get("type")
 
-        if command_class != 6:
+        logger.info(
+            "Z-Wave notification: cc=%s cc_name=%s type=%s event=%s params=%s",
+            command_class, command_class_name, cc_type,
+            data.get("event"), data.get("parameters"),
+        )
+
+        # Notification CC = 113 (0x71), Access Control type = 6
+        # Also accept command_class == 6 for backwards compat
+        if command_class not in (6, 113):
+            return
+
+        # If command_class is 113, check that type is 6 (Access Control)
+        if command_class == 113 and cc_type != 6:
             return
 
         event_code = data.get("event")
         event_info = ACCESS_CONTROL_EVENT_MAP.get(event_code)
         if not event_info:
+            logger.debug("Unknown access control event code: %s", event_code)
             return
 
         method, label = event_info
 
-        # Get entity_id from device_id or node_id
+        # Get entity_id - try multiple field names
         entity_id = data.get("entity_id")
         node_id = data.get("node_id")
         device_id = data.get("device_id")
 
         # Extract code slot from parameters if available
-        code_slot = data.get("parameters", {}).get("userId")
+        params = data.get("parameters", {})
+        code_slot = params.get("userId")
 
         if not entity_id:
-            logger.debug("Z-Wave notification without entity_id: node=%s event=%s", node_id, event_code)
+            logger.warning("Z-Wave notification without entity_id: node=%s device=%s event=%s", node_id, device_id, event_code)
             return
 
         # Only process unlock events (even codes = unlock)
@@ -213,8 +228,7 @@ class HAEventListener:
         if old_val == new_val:
             return
 
-        # We only use state_changed as a fallback if zwave_js_notification
-        # doesn't fire (shouldn't happen for Z-Wave locks, but just in case)
-        # Don't log state_changed for lock entities to avoid duplicate events
-        # since zwave_js_notification is the primary source
-        pass
+        logger.info(
+            "Lock state changed: %s %s -> %s",
+            entity_id, old_val, new_val,
+        )
