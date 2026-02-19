@@ -55,7 +55,7 @@ class AutoLockRequest(BaseModel):
 
 
 class VolumeRequest(BaseModel):
-    level: str  # "low", "high", or "off"
+    level: str  # "silent", "low", or "high"
 
 
 class SlotCodeRequest(BaseModel):

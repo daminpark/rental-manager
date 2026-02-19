@@ -223,32 +223,24 @@ class HomeAssistantClient:
     async def set_auto_lock(self, entity_id: str, enabled: bool) -> None:
         """Enable or disable auto-lock on a lock.
 
-        Note: Parameter number may vary by lock model. Yale Keyless Connected
-        typically uses parameter 1 or 2 for auto-lock.
-
         Args:
             entity_id: Lock entity ID
             enabled: True to enable, False to disable
         """
-        # Yale Keyless Connected auto-lock parameter
-        # Parameter 1: Auto-lock (0 = off, 255 = on for some models, or 1 = on)
-        # This may need adjustment based on actual lock configuration
-        await self.set_config_parameter(entity_id, 1, 255 if enabled else 0)
+        # Parameter 2: Auto Relock (0 = disable, 255 = enable)
+        await self.set_config_parameter(entity_id, 2, 255 if enabled else 0)
 
     async def set_volume(self, entity_id: str, level: str) -> None:
         """Set the volume level on a lock.
 
         Args:
             entity_id: Lock entity ID
-            level: "low", "high", or "off"
+            level: "silent", "low", or "high"
         """
-        # Yale Keyless Connected volume parameter
-        # Parameter may vary; common values:
-        # 0 = off, 1 = low, 2 = high
-        value_map = {"off": 0, "low": 1, "high": 2}
-        value = value_map.get(level.lower(), 1)
-        # Volume is often parameter 4 or similar
-        await self.set_config_parameter(entity_id, 4, value)
+        # Parameter 1: Volume (1 = silent, 2 = low, 3 = high)
+        value_map = {"silent": 1, "low": 2, "high": 3}
+        value = value_map.get(level.lower(), 2)
+        await self.set_config_parameter(entity_id, 1, value)
 
     # Utility methods
 
