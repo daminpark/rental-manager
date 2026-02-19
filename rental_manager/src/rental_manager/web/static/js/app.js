@@ -117,11 +117,13 @@ function renderLocks() {
         info.className = 'lock-info';
 
         const autoLockLabel = lock.auto_lock_enabled === true ? 'On' : lock.auto_lock_enabled === false ? 'Off' : '---';
+        const volumeLabel = lock.volume_level ? lock.volume_level.charAt(0).toUpperCase() + lock.volume_level.slice(1) : '---';
 
         const infoItems = [
             { label: 'Type', value: lock.lock_type },
             { label: 'Master Code', value: lock.master_code || '---' },
             { label: 'Auto-Lock', value: autoLockLabel },
+            { label: 'Volume', value: volumeLabel },
             { label: 'Emergency', value: lock.emergency_code || '---' },
         ];
 
@@ -985,6 +987,7 @@ function getActionLabel(action) {
         'auto_lock_changed': 'Auto-Lock Changed',
         'auto_lock_enable': 'Auto-Lock Enabled',
         'auto_lock_disable': 'Auto-Lock Disabled',
+        'volume_changed': 'Volume Changed',
         'whole_house_unlock': 'Whole House Unlock',
         'whole_house_lock': 'Whole House Lock',
         'no_code_warning': 'No Code Warning',
@@ -1766,6 +1769,19 @@ async function toggleAutoLock(entityId, enabled) {
     }
 }
 
+async function setVolume(entityId, level) {
+    try {
+        await api(`/locks/${entityId}/volume`, {
+            method: 'POST',
+            body: JSON.stringify({ level }),
+        });
+        showToast(`Volume set to ${level}`, 'success');
+        await refreshLockDetail(entityId);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
 function renderLockDetailControls(lock) {
     const controls = document.getElementById('lock-detail-controls');
     controls.textContent = '';
@@ -1791,6 +1807,31 @@ function renderLockDetailControls(lock) {
 
     controls.appendChild(autoLockOnBtn);
     controls.appendChild(autoLockOffBtn);
+
+    // Spacer
+    const spacer = document.createElement('span');
+    spacer.style.width = '1rem';
+    controls.appendChild(spacer);
+
+    // Volume controls
+    const volumeLabel = document.createElement('span');
+    volumeLabel.textContent = 'Volume:';
+    volumeLabel.style.fontWeight = '600';
+    controls.appendChild(volumeLabel);
+
+    ['silent', 'low', 'high'].forEach(level => {
+        const btn = document.createElement('button');
+        const isActive = lock.volume_level === level;
+        const colorClass = isActive
+            ? (level === 'silent' ? 'btn-info' : level === 'low' ? 'btn-success' : 'btn-warning')
+            : 'btn-secondary';
+        btn.className = `btn btn-sm ${colorClass}`;
+        btn.textContent = level.charAt(0).toUpperCase() + level.slice(1);
+        btn.style.fontSize = '0.7rem';
+        btn.style.padding = '0.15rem 0.5rem';
+        btn.addEventListener('click', () => setVolume(lock.entity_id, level));
+        controls.appendChild(btn);
+    });
 
     // Active codes summary
     const activeCount = countActiveCodes(lock);

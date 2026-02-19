@@ -213,11 +213,24 @@ async def set_volume(
     manager: RentalManager = Depends(get_manager),
 ):
     """Set the volume level on a lock."""
-    if request.level not in ("low", "high", "off"):
+    if request.level not in ("silent", "low", "high"):
         raise HTTPException(
-            status_code=400, detail="Level must be 'low', 'high', or 'off'"
+            status_code=400, detail="Level must be 'silent', 'low', or 'high'"
         )
     return await manager.set_volume(lock_entity_id, request.level)
+
+
+@router.post("/locks/volume-all")
+async def set_volume_all(
+    request: VolumeRequest,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Set the volume level on ALL locks."""
+    if request.level not in ("silent", "low", "high"):
+        raise HTTPException(
+            status_code=400, detail="Level must be 'silent', 'low', or 'high'"
+        )
+    return await manager.set_volume_all(request.level)
 
 
 # Master and emergency code endpoints

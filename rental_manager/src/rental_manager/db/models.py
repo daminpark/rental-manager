@@ -69,6 +69,7 @@ class Lock(Base):
     master_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     emergency_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     auto_lock_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=None)
+    volume_level: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, default=None)
 
     # Relationships
     house: Mapped["House"] = relationship("House", back_populates="locks")

@@ -41,6 +41,7 @@ async def _run_migrations() -> None:
         "ALTER TABLE calendars ADD COLUMN hosttools_listing_id VARCHAR(50)",
         "ALTER TABLE locks ADD COLUMN auto_lock_enabled BOOLEAN",
         "ALTER TABLE audit_log ADD COLUMN batch_id VARCHAR(50)",
+        "ALTER TABLE locks ADD COLUMN volume_level VARCHAR(10)",
     ]
     async with engine.begin() as conn:
         for stmt in migrations:

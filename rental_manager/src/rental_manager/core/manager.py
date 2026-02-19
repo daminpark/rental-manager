@@ -1289,6 +1289,7 @@ class RentalManager:
                     "master_code": lock.master_code,
                     "emergency_code": lock.emergency_code,
                     "auto_lock_enabled": lock.auto_lock_enabled,
+                    "volume_level": lock.volume_level,
                     "slots": [
                         _slot_info(slot)
                         for slot in sorted(lock.code_slots, key=lambda s: s.slot_number)
@@ -2554,7 +2555,48 @@ class RentalManager:
     async def set_volume(self, lock_entity_id: str, level: str) -> dict:
         """Set the volume level on a lock."""
         await self._ha_client.set_volume(lock_entity_id, level)
+        # Persist to DB
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).where(Lock.entity_id == lock_entity_id)
+            )
+            lock = result.scalar_one_or_none()
+            if lock:
+                lock.volume_level = level
+                session.add(AuditLog(
+                    action="volume_changed",
+                    lock_id=lock.id,
+                    details=f"Volume set to '{level}' on {lock.name}",
+                    success=True,
+                ))
+                await session.commit()
         return {"entity_id": lock_entity_id, "volume": level}
+
+    async def set_volume_all(self, level: str) -> dict:
+        """Set volume on ALL locks for this house."""
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).join(HouseModel).where(HouseModel.code == self._house_code)
+            )
+            locks = result.scalars().all()
+            results = []
+            errors = []
+            for lock in locks:
+                try:
+                    await self._ha_client.set_volume(lock.entity_id, level)
+                    lock.volume_level = level
+                    session.add(AuditLog(
+                        action="volume_changed",
+                        lock_id=lock.id,
+                        details=f"Volume set to '{level}' on {lock.name} (bulk)",
+                        success=True,
+                    ))
+                    results.append(lock.entity_id)
+                except Exception as e:
+                    logger.error("Failed to set volume on %s: %s", lock.entity_id, e)
+                    errors.append({"entity_id": lock.entity_id, "error": str(e)})
+            await session.commit()
+        return {"level": level, "set": len(results), "errors": errors}
 
     async def get_sync_status(self) -> dict:
         """Get the current sync status of all slots."""
