@@ -929,6 +929,51 @@ class RentalManager:
                             parsed.check_in_date, parsed.check_out_date,
                         )
 
+        # Remove stale bookings that no longer appear in the feed
+        stale_keys = set(existing_by_key.keys()) - processed_keys
+        for stale_key in stale_keys:
+            booking = existing_by_key[stale_key]
+            await self._remove_stale_booking(session, booking)
+
+    async def _remove_stale_booking(
+        self, session: AsyncSession, booking: Booking
+    ) -> None:
+        """Remove a booking that no longer appears in the calendar feed.
+
+        Cancels scheduler jobs, deletes code assignments, and deletes the booking.
+        """
+        logger.info(
+            f"Removing stale booking: {booking.guest_name} "
+            f"({booking.check_in_date}–{booking.check_out_date}) "
+            f"from calendar {booking.calendar_id}"
+        )
+
+        # Cancel all scheduler jobs for this booking
+        if self._scheduler:
+            jobs = self._scheduler.get_jobs_for_booking(booking.uid)
+            for job in jobs:
+                self._scheduler.cancel_job(job.job_id)
+            if jobs:
+                logger.info(f"Cancelled {len(jobs)} scheduler jobs for stale booking {booking.uid}")
+
+        # Delete code assignments
+        assignments = await session.execute(
+            select(CodeAssignment).where(CodeAssignment.booking_id == booking.id)
+        )
+        for assignment in assignments.scalars().all():
+            await session.delete(assignment)
+
+        # Delete time overrides
+        overrides = await session.execute(
+            select(TimeOverride).where(TimeOverride.booking_id == booking.id)
+        )
+        for override in overrides.scalars().all():
+            await session.delete(override)
+
+        # Delete the booking itself
+        await session.delete(booking)
+        logger.info(f"Deleted stale booking {booking.guest_name} (id={booking.id})")
+
     async def _notify_no_code(
         self, guest_name: str, calendar_name: str, check_in: date, check_out: date
     ) -> None:
