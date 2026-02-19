@@ -70,6 +70,8 @@ class RentalManager:
         self._polling = False
         # Serializes all Z-Wave commands so only one is in flight at a time
         self._zwave_lock = asyncio.Lock()
+        # Serializes code activations to prevent duplicate codes on shared locks
+        self._activation_lock = asyncio.Lock()
         # Track failed non-code operations (auto-lock, lock/unlock)
         # List of dicts: {id, lock_entity_id, lock_name, action, error, retry_count, reason, failed_at}
         self._failed_ops: list[dict] = []
@@ -560,7 +562,18 @@ class RentalManager:
     async def _on_code_activate(
         self, lock_entity_id: str, slot_number: int, code: str, booking_uid: str
     ) -> None:
-        """Activate a code on a lock."""
+        """Activate a code on a lock.
+
+        Serialized via _activation_lock to prevent race conditions when
+        multiple bookings with the same code activate simultaneously.
+        """
+        async with self._activation_lock:
+            await self._do_code_activate(lock_entity_id, slot_number, code, booking_uid)
+
+    async def _do_code_activate(
+        self, lock_entity_id: str, slot_number: int, code: str, booking_uid: str
+    ) -> None:
+        """Internal activation logic, must be called under _activation_lock."""
         # Guard: skip activation if booking is disabled
         async with get_session_context() as session:
             booking_result = await session.execute(
