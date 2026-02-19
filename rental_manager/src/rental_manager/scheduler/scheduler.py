@@ -211,7 +211,7 @@ class CodeScheduler:
                 f"Error deactivating code on {lock_entity_id} slot {slot_number}: {e}"
             )
 
-    async def _handle_finalize(self, booking_uid: str, calendar_id: str) -> None:
+    async def _handle_finalize(self, booking_uid: str, calendar_id: str, booking_id: int = 0) -> None:
         """Handle code finalization at 11am day before check-in."""
         job_id = f"finalize_{booking_uid}"
         if job_id in self._scheduled_jobs:
@@ -219,7 +219,7 @@ class CodeScheduler:
 
         if self._on_code_finalize:
             try:
-                await self._on_code_finalize(booking_uid, calendar_id)
+                await self._on_code_finalize(booking_uid, calendar_id, booking_id)
             except Exception as e:
                 logger.error(f"Error finalizing code for booking {booking_uid}: {e}")
 
@@ -304,7 +304,8 @@ class CodeScheduler:
         return checkin_job_id, checkout_job_id
 
     def schedule_finalization(
-        self, booking_uid: str, calendar_id: str, finalize_at: datetime
+        self, booking_uid: str, calendar_id: str, finalize_at: datetime,
+        booking_id: int = 0,
     ) -> str:
         """Schedule code finalization at 11am the day before check-in."""
         job_id = f"finalize_{booking_uid}"
@@ -313,13 +314,13 @@ class CodeScheduler:
         if finalize_at <= now:
             # Already past finalization time, queue for catch-up
             self._catchup_queue.put_nowait((
-                "finalize", (booking_uid, calendar_id),
+                "finalize", (booking_uid, calendar_id, booking_id),
             ))
         else:
             self._scheduler.add_job(
                 self._handle_finalize,
                 DateTrigger(run_date=finalize_at),
-                args=[booking_uid, calendar_id],
+                args=[booking_uid, calendar_id, booking_id],
                 id=job_id,
                 replace_existing=True,
             )

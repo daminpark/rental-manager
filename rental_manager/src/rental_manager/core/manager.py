@@ -657,26 +657,33 @@ class RentalManager:
             )
             session.add(audit)
 
-    async def _on_code_finalize(self, booking_uid: str, calendar_id_str: str) -> None:
+    async def _on_code_finalize(self, booking_uid: str, calendar_id_str: str, booking_id: int = 0) -> None:
         """Finalize the code for a booking at 11am the day before check-in.
 
         Re-fetches the calendar to get the latest phone number, generates the
         definitive code, and locks it in. Any scheduled activations are updated.
         """
-        logger.info(f"Finalizing code for booking {booking_uid} (calendar {calendar_id_str})")
+        logger.info(f"Finalizing code for booking {booking_uid} (calendar {calendar_id_str}, id={booking_id})")
 
         async with get_session_context() as session:
-            # Get the booking
-            booking_result = await session.execute(
-                select(Booking)
-                .options(selectinload(Booking.calendar))
-                .where(Booking.uid == booking_uid)
-                .join(Calendar)
-                .where(Calendar.calendar_id == calendar_id_str)
-            )
+            # Look up by DB id first (stable), fall back to UID (unstable with HostTools)
+            if booking_id:
+                booking_result = await session.execute(
+                    select(Booking)
+                    .options(selectinload(Booking.calendar))
+                    .where(Booking.id == booking_id)
+                )
+            else:
+                booking_result = await session.execute(
+                    select(Booking)
+                    .options(selectinload(Booking.calendar))
+                    .where(Booking.uid == booking_uid)
+                    .join(Calendar)
+                    .where(Calendar.calendar_id == calendar_id_str)
+                )
             booking = booking_result.scalar_one_or_none()
             if not booking:
-                logger.warning(f"Booking {booking_uid} not found for finalization")
+                logger.warning(f"Booking {booking_uid} (id={booking_id}) not found for finalization")
                 return
 
             if booking.locked_code:
@@ -907,6 +914,7 @@ class RentalManager:
                             booking_uid=parsed.uid,
                             calendar_id=calendar.calendar_id,
                             finalize_at=finalize_at,
+                            booking_id=booking.id,
                         )
 
                     # Schedule whole-house auto-lock toggle for whole_house/both_houses calendars

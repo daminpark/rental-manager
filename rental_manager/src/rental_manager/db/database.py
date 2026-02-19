@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
+    connect_args={"timeout": 30},
 )
 
 async_session_maker = async_sessionmaker(
