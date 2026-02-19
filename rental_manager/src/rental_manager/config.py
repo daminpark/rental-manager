@@ -93,6 +93,7 @@ class CalendarConfig(BaseModel):
     calendar_type: CalendarType
     ical_url: str
     ha_entity_id: str = ""  # HA calendar entity ID (e.g., "calendar.195_room_1")
+    hosttools_listing_id: str = ""  # HostTools listing ID for direct API access
     rooms: list[int] = Field(default_factory=list)  # Room numbers included (for suites)
 
 
@@ -126,6 +127,9 @@ class Settings(BaseSettings):
 
     # House code for this instance
     house_code: str = "195"
+
+    # HostTools API
+    hosttools_auth_token: str = ""  # HostTools API auth token
 
     # Google Sheets backup for emergency codes
     google_sheets_credentials: str = ""  # Path to service account JSON
@@ -228,27 +232,27 @@ def build_locks(house_code: str) -> list[LockConfig]:
 # Go to the Calendars view to set each calendar's iCal URL.
 
 # Calendar metadata keyed by calendar_id
-# Tuple: (display_name, calendar_type, rooms, ha_entity_id)
-_CALENDAR_META: dict[str, tuple[str, CalendarType, list[int], str]] = {
-    "195_room_1": ("195 Room 1", CalendarType.ROOM, [1], "calendar.195_1_calendar"),
-    "195_room_2": ("195 Room 2", CalendarType.ROOM, [2], "calendar.195_2_calendar"),
-    "195_room_3": ("195 Room 3", CalendarType.ROOM, [3], "calendar.195_3_calendar"),
-    "195_room_4": ("195 Room 4", CalendarType.ROOM, [4], "calendar.195_4_calendar"),
-    "195_room_5": ("195 Room 5", CalendarType.ROOM, [5], "calendar.195_5_calendar"),
-    "195_room_6": ("195 Room 6", CalendarType.ROOM, [6], "calendar.195_6_calendar"),
-    "195_suite_a": ("195 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2], "calendar.195_a_calendar"),
-    "195_suite_b": ("195 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6], "calendar.195_b_calendar"),
-    "195vbr": ("195 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6], "calendar.195vbr_calendar"),
-    "193_room_1": ("193 Room 1", CalendarType.ROOM, [1], "calendar.193_1_calendar"),
-    "193_room_2": ("193 Room 2", CalendarType.ROOM, [2], "calendar.193_2_calendar"),
-    "193_room_3": ("193 Room 3", CalendarType.ROOM, [3], "calendar.193_3_calendar"),
-    "193_room_4": ("193 Room 4", CalendarType.ROOM, [4], "calendar.193_4_calendar"),
-    "193_room_5": ("193 Room 5", CalendarType.ROOM, [5], "calendar.193_5_calendar"),
-    "193_room_6": ("193 Room 6", CalendarType.ROOM, [6], "calendar.193_6_calendar"),
-    "193_suite_a": ("193 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2], "calendar.193_a_calendar"),
-    "193_suite_b": ("193 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6], "calendar.193_b_calendar"),
-    "193vbr": ("193 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6], "calendar.193vbr_calendar"),
-    "193195vbr": ("193 & 195 Vauxhall Bridge Road (Both Houses)", CalendarType.BOTH_HOUSES, [1, 2, 3, 4, 5, 6], "calendar.193195vbr_calendar"),
+# Tuple: (display_name, calendar_type, rooms, ha_entity_id, hosttools_listing_id)
+_CALENDAR_META: dict[str, tuple[str, CalendarType, list[int], str, str]] = {
+    "195_room_1": ("195 Room 1", CalendarType.ROOM, [1], "calendar.195_1_calendar", "6574a2c7d05d645172420b37"),
+    "195_room_2": ("195 Room 2", CalendarType.ROOM, [2], "calendar.195_2_calendar", "6574a2c7d05d645172420b3c"),
+    "195_room_3": ("195 Room 3", CalendarType.ROOM, [3], "calendar.195_3_calendar", "6574a2c7d05d645172420b3a"),
+    "195_room_4": ("195 Room 4", CalendarType.ROOM, [4], "calendar.195_4_calendar", "6574a2c7d05d645172420b42"),
+    "195_room_5": ("195 Room 5", CalendarType.ROOM, [5], "calendar.195_5_calendar", "6574a2c7d05d645172420b4b"),
+    "195_room_6": ("195 Room 6", CalendarType.ROOM, [6], "calendar.195_6_calendar", "6574a2c7d05d645172420b46"),
+    "195_suite_a": ("195 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2], "calendar.195_a_calendar", "6574a2c7d05d645172420b4a"),
+    "195_suite_b": ("195 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6], "calendar.195_b_calendar", "6574a2c7d05d645172420b43"),
+    "195vbr": ("195 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6], "calendar.195vbr_calendar", "6574a2c7d05d645172420b49"),
+    "193_room_1": ("193 Room 1", CalendarType.ROOM, [1], "calendar.193_1_calendar", "6573d386d05d645172729f16"),
+    "193_room_2": ("193 Room 2", CalendarType.ROOM, [2], "calendar.193_2_calendar", "6573d618d05d6451727794bd"),
+    "193_room_3": ("193 Room 3", CalendarType.ROOM, [3], "calendar.193_3_calendar", "6573d618d05d6451727794b2"),
+    "193_room_4": ("193 Room 4", CalendarType.ROOM, [4], "calendar.193_4_calendar", "6573d618d05d6451727794b4"),
+    "193_room_5": ("193 Room 5", CalendarType.ROOM, [5], "calendar.193_5_calendar", "6573d618d05d6451727794b7"),
+    "193_room_6": ("193 Room 6", CalendarType.ROOM, [6], "calendar.193_6_calendar", "6573d618d05d6451727794ba"),
+    "193_suite_a": ("193 Suite A (Rooms 1+2)", CalendarType.SUITE_A, [1, 2], "calendar.193_a_calendar", "6573d618d05d6451727794bc"),
+    "193_suite_b": ("193 Suite B (Rooms 4+5+6)", CalendarType.SUITE_B, [4, 5, 6], "calendar.193_b_calendar", "6573d618d05d6451727794b9"),
+    "193vbr": ("193 Vauxhall Bridge Road (Whole House)", CalendarType.WHOLE_HOUSE, [1, 2, 3, 4, 5, 6], "calendar.193vbr_calendar", "6573d618d05d6451727794be"),
+    "193195vbr": ("193 & 195 Vauxhall Bridge Road (Both Houses)", CalendarType.BOTH_HOUSES, [1, 2, 3, 4, 5, 6], "calendar.193195vbr_calendar", "6574a2c7d05d645172420b44"),
 }
 
 
@@ -266,7 +270,7 @@ def build_calendars(house_code: str) -> list[CalendarConfig]:
     both_houses_id = "193195vbr"
 
     calendars = []
-    for cal_id, (name, cal_type, rooms, ha_entity_id) in _CALENDAR_META.items():
+    for cal_id, (name, cal_type, rooms, ha_entity_id, hosttools_listing_id) in _CALENDAR_META.items():
         # Include calendars that belong to this house or the both-houses calendar
         if cal_id.startswith(prefix) or cal_id == whole_house_id or cal_id == both_houses_id:
             calendars.append(CalendarConfig(
@@ -275,6 +279,7 @@ def build_calendars(house_code: str) -> list[CalendarConfig]:
                 calendar_type=cal_type,
                 ical_url="",
                 ha_entity_id=ha_entity_id,
+                hosttools_listing_id=hosttools_listing_id,
                 rooms=rooms,
             ))
 

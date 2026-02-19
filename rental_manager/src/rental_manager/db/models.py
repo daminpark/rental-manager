@@ -97,6 +97,7 @@ class Calendar(Base):
     calendar_type: Mapped[str] = mapped_column(String(20))  # room, suite_a, suite_b, whole_house, both_houses
     ical_url: Mapped[str] = mapped_column(String(500))
     ha_entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # e.g., "calendar.195_room_1"
+    hosttools_listing_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # HostTools listing ID
     last_fetched: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_fetch_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

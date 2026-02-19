@@ -37,6 +37,7 @@ async def _run_migrations() -> None:
         "ALTER TABLE bookings ADD COLUMN code_disabled BOOLEAN DEFAULT 0",
         "ALTER TABLE bookings ADD COLUMN code_disabled_at DATETIME",
         "ALTER TABLE calendars ADD COLUMN ha_entity_id VARCHAR(100)",
+        "ALTER TABLE calendars ADD COLUMN hosttools_listing_id VARCHAR(50)",
         "ALTER TABLE locks ADD COLUMN auto_lock_enabled BOOLEAN",
         "ALTER TABLE audit_log ADD COLUMN batch_id VARCHAR(50)",
     ]
@@ -48,15 +49,19 @@ async def _run_migrations() -> None:
             except Exception:
                 pass  # Column already exists
 
-        # Backfill ha_entity_id for existing calendars using correct HA entity names
+        # Backfill ha_entity_id and hosttools_listing_id for existing calendars
         try:
             from rental_manager.config import _CALENDAR_META
-            for cal_id, (_, _, _, ha_entity_id) in _CALENDAR_META.items():
+            for cal_id, (_, _, _, ha_entity_id, hosttools_listing_id) in _CALENDAR_META.items():
                 await conn.execute(text(
                     "UPDATE calendars SET ha_entity_id = :ha_entity_id "
                     "WHERE calendar_id = :cal_id AND (ha_entity_id IS NULL OR ha_entity_id = 'calendar.' || calendar_id)"
                 ), {"ha_entity_id": ha_entity_id, "cal_id": cal_id})
-            logger.info("Backfilled ha_entity_id for existing calendars")
+                await conn.execute(text(
+                    "UPDATE calendars SET hosttools_listing_id = :listing_id "
+                    "WHERE calendar_id = :cal_id AND hosttools_listing_id IS NULL"
+                ), {"listing_id": hosttools_listing_id, "cal_id": cal_id})
+            logger.info("Backfilled ha_entity_id and hosttools_listing_id for existing calendars")
         except Exception:
             pass
 

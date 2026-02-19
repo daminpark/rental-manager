@@ -28,6 +28,7 @@ from rental_manager.core.code_manager import (
 )
 from rental_manager.core.ical_parser import ICalFetcher, ParsedBooking, parse_ha_calendar_events
 from rental_manager.core.sync_manager import SyncManager, SyncState
+from rental_manager.hosttools.client import HostToolsClient, parse_hosttools_reservations
 from rental_manager.db.database import get_session_context
 from rental_manager.db.models import (
     AuditLog,
@@ -58,6 +59,10 @@ class RentalManager:
         self.settings = settings
         self._ical_fetcher = ICalFetcher()
         self._ha_client = HomeAssistantClient(settings.ha_url, settings.ha_token)
+        self._hosttools_client: Optional[HostToolsClient] = None
+        if settings.hosttools_auth_token:
+            self._hosttools_client = HostToolsClient(settings.hosttools_auth_token)
+            logger.info("HostTools API client initialized")
         self._slot_allocator = SlotAllocator()
         self._scheduler: Optional[CodeScheduler] = None
         self._sync_manager: Optional[SyncManager] = None
@@ -208,6 +213,8 @@ class RentalManager:
 
         await self._ha_client.close()
         await self._ical_fetcher.close()
+        if self._hosttools_client:
+            await self._hosttools_client.close()
 
         logger.info("Rental manager stopped")
 
@@ -275,6 +282,7 @@ class RentalManager:
                 calendar_type=cal_config.calendar_type.value,
                 ical_url=saved_urls.get(cal_config.calendar_id, cal_config.ical_url),
                 ha_entity_id=cal_config.ha_entity_id or None,
+                hosttools_listing_id=cal_config.hosttools_listing_id or None,
             )
             session.add(cal)
             calendar_map[cal_config.calendar_id] = cal
@@ -675,17 +683,23 @@ class RentalManager:
                 logger.info(f"Booking {booking_uid} already has locked code {booking.locked_code}")
                 return
 
-            # Re-fetch the calendar to get latest data
+            # Re-fetch the calendar to get latest data (phone number may have been added)
             calendar = booking.calendar
             try:
                 parsed_bookings = await self._fetch_calendar_bookings(calendar)
                 if parsed_bookings:
-                    # Find this booking in the fresh data
+                    # Match by content key (guest_name + dates), not UID
+                    match_key = self._booking_match_key(
+                        booking.guest_name, booking.check_in_date, booking.check_out_date
+                    )
                     for parsed in parsed_bookings:
-                        if parsed.uid == booking_uid:
+                        parsed_key = self._booking_match_key(
+                            parsed.guest_name, parsed.check_in_date, parsed.check_out_date
+                        )
+                        if parsed_key == match_key:
                             if parsed.phone and parsed.phone != booking.phone:
                                 logger.info(
-                                    f"Phone updated for {booking_uid}: "
+                                    f"Phone updated for {booking.guest_name}: "
                                     f"{booking.phone} -> {parsed.phone}"
                                 )
                                 booking.phone = parsed.phone
@@ -743,17 +757,14 @@ class RentalManager:
     async def _poll_calendars(self) -> None:
         """Poll all calendars for updates.
 
-        For each calendar, tries the HA calendar entity first (if configured),
-        then falls back to the iCal URL.
+        For each calendar, tries HostTools API first (if listing ID configured),
+        then HA calendar entity, then iCal URL.
         """
         if self._polling:
             logger.info("Calendar poll already in progress, skipping")
             return
         self._polling = True
         logger.info("Polling calendars...")
-
-        # Force HA to re-fetch iCal feeds before we read events
-        await self._reload_ha_calendars()
 
         async with get_session_context() as session:
             # Get all calendars
@@ -783,11 +794,29 @@ class RentalManager:
     async def _fetch_calendar_bookings(
         self, calendar: Calendar
     ) -> list[ParsedBooking] | None:
-        """Fetch bookings from a calendar using HA entity or iCal URL.
+        """Fetch bookings from a calendar.
 
+        Priority: HostTools API > HA calendar entity > iCal URL.
         Returns None if no source is configured.
         """
-        # Try HA calendar entity first
+        # Try HostTools API first (fastest, richest data)
+        if self._hosttools_client and calendar.hosttools_listing_id:
+            try:
+                reservations = await self._hosttools_client.get_reservations(
+                    calendar.hosttools_listing_id
+                )
+                bookings = parse_hosttools_reservations(reservations)
+                logger.debug(
+                    f"Fetched {len(bookings)} bookings from HostTools for {calendar.calendar_id}"
+                )
+                return bookings
+            except Exception as e:
+                logger.warning(
+                    f"HostTools API failed for {calendar.calendar_id}: {e}, "
+                    f"falling back to HA calendar"
+                )
+
+        # Fall back to HA calendar entity
         if calendar.ha_entity_id:
             try:
                 events = await self._ha_client.get_calendar_events(calendar.ha_entity_id)
@@ -797,7 +826,6 @@ class RentalManager:
                     f"HA calendar entity {calendar.ha_entity_id} failed: {e}, "
                     f"falling back to iCal URL"
                 )
-                # Fall through to iCal URL
 
         # Fall back to iCal URL
         if calendar.ical_url:
