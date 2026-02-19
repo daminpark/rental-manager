@@ -2376,8 +2376,8 @@ class RentalManager:
                     )
                     locks_to_reschedule.extend(bath_result.scalars().all())
 
-                if booking and booking.phone:
-                    code = generate_code_from_phone(booking.phone)
+                if booking and (booking.phone or booking.locked_code):
+                    code = booking.locked_code or generate_code_from_phone(booking.phone)
                     slot_a, slot_b = get_slot_for_calendar(booking.calendar.calendar_id)
                     slot_number = slot_a
 
@@ -2390,6 +2390,27 @@ class RentalManager:
                             self._scheduler.reschedule_deactivation(
                                 lock.entity_id, slot_number, booking.uid, deactivate_at
                             )
+
+            # Update CodeAssignment activate_at/deactivate_at to match override
+            lock_ids = (
+                [lk.id for lk in locks_to_reschedule]
+                if locks_to_reschedule
+                else ([lock_id] if target_lock else [])
+            )
+            if lock_ids:
+                assign_result = await session.execute(
+                    select(CodeAssignment)
+                    .join(CodeSlot)
+                    .where(
+                        CodeAssignment.booking_id == booking_id,
+                        CodeSlot.lock_id.in_(lock_ids),
+                    )
+                )
+                for assignment in assign_result.scalars().all():
+                    if activate_at:
+                        assignment.activate_at = activate_at
+                    if deactivate_at:
+                        assignment.deactivate_at = deactivate_at
 
             await session.commit()
 
