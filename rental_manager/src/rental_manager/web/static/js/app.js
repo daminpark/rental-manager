@@ -514,14 +514,6 @@ function renderCalendars() {
         badgeWrap.style.display = 'flex';
         badgeWrap.style.gap = '0.5rem';
 
-        if (cal.ha_entity_id) {
-            const haBadge = document.createElement('span');
-            haBadge.className = 'badge badge-success';
-            haBadge.textContent = 'HA Entity';
-            haBadge.style.fontSize = '0.7rem';
-            badgeWrap.appendChild(haBadge);
-        }
-
         const badge = document.createElement('span');
         badge.className = cal.last_fetch_error ? 'badge badge-danger' : 'badge badge-success';
         badge.textContent = cal.last_fetch_error ? 'Error' : 'OK';
@@ -548,15 +540,6 @@ function renderCalendars() {
         typeP.appendChild(document.createTextNode(cal.calendar_type));
         info.appendChild(typeP);
 
-        if (cal.ha_entity_id) {
-            const entityP = document.createElement('p');
-            const entityStrong = document.createElement('strong');
-            entityStrong.textContent = 'HA Entity: ';
-            entityP.appendChild(entityStrong);
-            entityP.appendChild(document.createTextNode(cal.ha_entity_id));
-            info.appendChild(entityP);
-        }
-
         const fetchedP = document.createElement('p');
         const fetchedStrong = document.createElement('strong');
         fetchedStrong.textContent = 'Last fetched: ';
@@ -574,57 +557,8 @@ function renderCalendars() {
             info.appendChild(errorP);
         }
 
-        const inputDiv = document.createElement('div');
-        inputDiv.style.marginTop = '0.75rem';
-
-        // HA Entity ID input
-        const entityLabel = document.createElement('label');
-        entityLabel.className = 'form-label';
-        entityLabel.textContent = 'HA Calendar Entity';
-        entityLabel.style.fontSize = '0.8rem';
-        inputDiv.appendChild(entityLabel);
-
-        const entityInput = document.createElement('input');
-        entityInput.type = 'text';
-        entityInput.className = 'form-input';
-        entityInput.value = cal.ha_entity_id || '';
-        entityInput.placeholder = 'calendar.195_1_calendar';
-        entityInput.id = `entity-${cal.calendar_id}`;
-        entityInput.style.marginBottom = '0.5rem';
-        inputDiv.appendChild(entityInput);
-
-        const entityBtn = document.createElement('button');
-        entityBtn.className = 'btn btn-sm btn-primary';
-        entityBtn.textContent = 'Save Entity';
-        entityBtn.style.marginBottom = '0.75rem';
-        entityBtn.addEventListener('click', () => updateCalendarEntity(cal.calendar_id));
-        inputDiv.appendChild(entityBtn);
-
-        // iCal URL input (fallback)
-        const urlLabel = document.createElement('label');
-        urlLabel.className = 'form-label';
-        urlLabel.textContent = 'iCal URL (fallback)';
-        urlLabel.style.fontSize = '0.8rem';
-        inputDiv.appendChild(urlLabel);
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'form-input';
-        input.value = cal.ical_url || '';
-        input.placeholder = 'iCal URL';
-        input.id = `url-${cal.calendar_id}`;
-        inputDiv.appendChild(input);
-
-        const updateBtn = document.createElement('button');
-        updateBtn.className = 'btn btn-sm btn-primary';
-        updateBtn.style.marginTop = '0.5rem';
-        updateBtn.textContent = 'Update URL';
-        updateBtn.addEventListener('click', () => updateCalendarUrl(cal.calendar_id));
-        inputDiv.appendChild(updateBtn);
-
         card.appendChild(header);
         card.appendChild(info);
-        card.appendChild(inputDiv);
         container.appendChild(card);
     });
 }
@@ -1449,21 +1383,6 @@ async function saveEmergencyCode(lockId, code) {
     }
 }
 
-async function updateCalendarEntity(calendarId) {
-    const entityId = document.getElementById(`entity-${calendarId}`).value.trim();
-
-    try {
-        await api(`/calendars/${calendarId}/entity`, {
-            method: 'PUT',
-            body: JSON.stringify({ ha_entity_id: entityId }),
-        });
-        showToast('Calendar entity updated', 'success');
-        loadCalendars();
-    } catch (error) {
-        showToast(error.message, 'error');
-    }
-}
-
 async function setBookingCode(bookingId) {
     const code = prompt('Enter new 4-digit PIN code for this guest:');
     if (!code) return;
@@ -1486,21 +1405,6 @@ async function setBookingCode(bookingId) {
     }
 }
 
-async function updateCalendarUrl(calendarId) {
-    const url = document.getElementById(`url-${calendarId}`).value;
-
-    try {
-        await api(`/calendars/${calendarId}/url`, {
-            method: 'PUT',
-            body: JSON.stringify({ calendar_id: calendarId, ical_url: url }),
-        });
-        showToast('Calendar URL updated', 'success');
-        loadCalendars();
-    } catch (error) {
-        showToast(error.message, 'error');
-    }
-}
-
 async function refreshCalendars() {
     try {
         await api('/calendars/refresh', { method: 'POST' });
@@ -1509,33 +1413,6 @@ async function refreshCalendars() {
         loadBookings();
     } catch (error) {
         showToast(error.message, 'error');
-    }
-}
-
-async function syncCalendarsToHA() {
-    if (!confirm(
-        'Sync all calendar iCal URLs to Home Assistant remote_calendar integrations?\n\n'
-        + 'This will delete and re-create each remote_calendar config entry with the current URL. '
-        + 'Entity IDs will be preserved. This may take a minute.'
-    )) return;
-
-    showToast('Syncing calendars to HA... this may take a minute', 'info');
-
-    try {
-        const result = await api('/calendars/sync-to-ha', { method: 'POST' });
-        let msg = `Synced ${result.synced.length} calendar(s) to HA`;
-        if (result.created.length > 0) {
-            msg += `, ${result.created.length} newly created`;
-        }
-        if (result.errors.length > 0) {
-            msg += `, ${result.errors.length} error(s)`;
-            showToast(msg, 'error');
-        } else {
-            showToast(msg, 'success');
-        }
-        loadCalendars();
-    } catch (error) {
-        showToast('Sync failed: ' + error.message, 'error');
     }
 }
 

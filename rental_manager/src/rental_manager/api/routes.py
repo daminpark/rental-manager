@@ -62,19 +62,6 @@ class SlotCodeRequest(BaseModel):
     code: str
 
 
-class CalendarUrlRequest(BaseModel):
-    calendar_id: str
-    ical_url: str
-
-
-class CalendarEntityRequest(BaseModel):
-    ha_entity_id: str
-
-
-class BulkCalendarUrlRequest(BaseModel):
-    urls: dict[str, str]  # calendar_id -> ical_url
-
-
 class BookingCodeRequest(BaseModel):
     code: str
 
@@ -415,122 +402,11 @@ async def get_calendars(manager: RentalManager = Depends(get_manager)):
         ]
 
 
-@router.put("/calendars/{calendar_id}/url")
-async def update_calendar_url(
-    calendar_id: str,
-    request: CalendarUrlRequest,
-    manager: RentalManager = Depends(get_manager),
-):
-    """Update the iCal URL for a calendar."""
-    from rental_manager.db.database import get_session_context
-    from rental_manager.db.models import Calendar
-    from sqlalchemy import select
-
-    async with get_session_context() as session:
-        result = await session.execute(
-            select(Calendar).where(Calendar.calendar_id == calendar_id)
-        )
-        calendar = result.scalar_one_or_none()
-        if not calendar:
-            raise HTTPException(status_code=404, detail="Calendar not found")
-
-        calendar.ical_url = request.ical_url
-        await session.commit()
-
-        # Persist all URLs to file (survives DB wipe)
-        all_cals = await session.execute(select(Calendar))
-        urls = {c.calendar_id: c.ical_url for c in all_cals.scalars().all() if c.ical_url}
-        manager._save_calendar_urls(urls)
-
-        return {
-            "calendar_id": calendar.calendar_id,
-            "ical_url": calendar.ical_url,
-        }
-
-
-@router.put("/calendars/{calendar_id}/entity")
-async def update_calendar_entity(
-    calendar_id: str,
-    request: CalendarEntityRequest,
-    manager: RentalManager = Depends(get_manager),
-):
-    """Update the HA calendar entity ID for a calendar."""
-    from rental_manager.db.database import get_session_context
-    from rental_manager.db.models import Calendar
-    from sqlalchemy import select
-
-    async with get_session_context() as session:
-        result = await session.execute(
-            select(Calendar).where(Calendar.calendar_id == calendar_id)
-        )
-        calendar = result.scalar_one_or_none()
-        if not calendar:
-            raise HTTPException(status_code=404, detail="Calendar not found")
-
-        calendar.ha_entity_id = request.ha_entity_id or None
-        await session.commit()
-
-        return {
-            "calendar_id": calendar.calendar_id,
-            "ha_entity_id": calendar.ha_entity_id,
-        }
-
-
-@router.put("/calendars/bulk-urls")
-async def bulk_update_calendar_urls(
-    request: BulkCalendarUrlRequest,
-    manager: RentalManager = Depends(get_manager),
-):
-    """Update multiple calendar iCal URLs at once."""
-    from rental_manager.db.database import get_session_context
-    from rental_manager.db.models import Calendar
-    from sqlalchemy import select
-
-    updated = []
-    not_found = []
-
-    async with get_session_context() as session:
-        for cal_id, url in request.urls.items():
-            result = await session.execute(
-                select(Calendar).where(Calendar.calendar_id == cal_id)
-            )
-            calendar = result.scalar_one_or_none()
-            if not calendar:
-                not_found.append(cal_id)
-                continue
-
-            calendar.ical_url = url
-            updated.append(cal_id)
-
-        await session.commit()
-
-        # Persist all URLs to file (survives DB wipe)
-        all_cals = await session.execute(select(Calendar))
-        urls = {c.calendar_id: c.ical_url for c in all_cals.scalars().all() if c.ical_url}
-        manager._save_calendar_urls(urls)
-
-    return {
-        "updated": updated,
-        "not_found": not_found,
-    }
-
-
 @router.post("/calendars/refresh")
 async def refresh_calendars(manager: RentalManager = Depends(get_manager)):
     """Manually trigger a calendar refresh."""
     await manager._poll_calendars()
     return {"status": "refreshed"}
-
-
-@router.post("/calendars/sync-to-ha")
-async def sync_calendars_to_ha(manager: RentalManager = Depends(get_manager)):
-    """Sync calendar iCal URLs to HA remote_calendar config entries.
-
-    For each calendar with an iCal URL, this will delete the existing
-    remote_calendar config entry (if any) and re-create it with the
-    current URL. Entity IDs are preserved.
-    """
-    return await manager.sync_calendars_to_ha()
 
 
 @router.post("/bookings/{booking_id}/set-code")

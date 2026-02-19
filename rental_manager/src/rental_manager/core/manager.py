@@ -26,7 +26,7 @@ from rental_manager.core.code_manager import (
     calculate_code_times,
     generate_code_from_phone,
 )
-from rental_manager.core.ical_parser import ICalFetcher, ParsedBooking, parse_ha_calendar_events
+from rental_manager.core.ical_parser import ParsedBooking
 from rental_manager.core.sync_manager import SyncManager, SyncState
 from rental_manager.hosttools.client import HostToolsClient, parse_hosttools_reservations
 from rental_manager.db.database import get_session_context
@@ -57,7 +57,6 @@ class RentalManager:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._ical_fetcher = ICalFetcher()
         self._ha_client = HomeAssistantClient(settings.ha_url, settings.ha_token)
         self._hosttools_client: Optional[HostToolsClient] = None
         if settings.hosttools_auth_token:
@@ -212,7 +211,6 @@ class RentalManager:
             self._sync_manager.stop()
 
         await self._ha_client.close()
-        await self._ical_fetcher.close()
         if self._hosttools_client:
             await self._hosttools_client.close()
 
@@ -779,23 +777,6 @@ class RentalManager:
             f"Emergency codes rotated: {result['success_count']}/{result['total_locks']} locks"
         )
 
-    async def _reload_ha_calendars(self) -> None:
-        """Reload all remote_calendar config entries in HA.
-
-        Forces HA to re-fetch iCal feeds immediately instead of waiting
-        for its own 15-minute polling cycle.
-        """
-        try:
-            entries = await self._ha_client.get_config_entries("remote_calendar")
-            for entry in entries:
-                entry_id = entry.get("entry_id")
-                if entry_id:
-                    await self._ha_client.reload_config_entry(entry_id)
-            if entries:
-                logger.info(f"Reloaded {len(entries)} remote_calendar config entries")
-        except Exception as e:
-            logger.warning(f"Could not reload remote_calendar entries: {e}")
-
     async def _poll_calendars(self) -> None:
         """Poll all calendars for updates.
 
@@ -836,44 +817,21 @@ class RentalManager:
     async def _fetch_calendar_bookings(
         self, calendar: Calendar
     ) -> list[ParsedBooking] | None:
-        """Fetch bookings from a calendar.
+        """Fetch bookings from a calendar via HostTools API.
 
-        Priority: HostTools API > HA calendar entity > iCal URL.
-        Returns None if no source is configured.
+        Returns None if HostTools is not configured for this calendar.
         """
-        # Try HostTools API first (fastest, richest data)
-        if self._hosttools_client and calendar.hosttools_listing_id:
-            try:
-                reservations = await self._hosttools_client.get_reservations(
-                    calendar.hosttools_listing_id
-                )
-                bookings = parse_hosttools_reservations(reservations)
-                logger.debug(
-                    f"Fetched {len(bookings)} bookings from HostTools for {calendar.calendar_id}"
-                )
-                return bookings
-            except Exception as e:
-                logger.warning(
-                    f"HostTools API failed for {calendar.calendar_id}: {e}, "
-                    f"falling back to HA calendar"
-                )
+        if not self._hosttools_client or not calendar.hosttools_listing_id:
+            return None
 
-        # Fall back to HA calendar entity
-        if calendar.ha_entity_id:
-            try:
-                events = await self._ha_client.get_calendar_events(calendar.ha_entity_id)
-                return parse_ha_calendar_events(events)
-            except Exception as e:
-                logger.warning(
-                    f"HA calendar entity {calendar.ha_entity_id} failed: {e}, "
-                    f"falling back to iCal URL"
-                )
-
-        # Fall back to iCal URL
-        if calendar.ical_url:
-            return await self._ical_fetcher.fetch_and_parse(calendar.ical_url)
-
-        return None
+        reservations = await self._hosttools_client.get_reservations(
+            calendar.hosttools_listing_id
+        )
+        bookings = parse_hosttools_reservations(reservations)
+        logger.debug(
+            f"Fetched {len(bookings)} bookings from HostTools for {calendar.calendar_id}"
+        )
+        return bookings
 
     @staticmethod
     def _booking_match_key(guest_name: str, check_in: date, check_out: date) -> str:
@@ -1304,7 +1262,13 @@ class RentalManager:
         from_date: Optional[date] = None,
         to_date: Optional[date] = None,
     ) -> list[dict]:
-        """Get bookings, optionally filtered."""
+        """Get bookings, optionally filtered.
+
+        Defaults to showing bookings with check-out in the last 30 days or later.
+        """
+        if from_date is None:
+            from_date = date.today() - timedelta(days=30)
+
         async with get_session_context() as session:
             query = select(Booking).options(selectinload(Booking.calendar))
 
@@ -1313,8 +1277,7 @@ class RentalManager:
                     Calendar.calendar_id == calendar_id
                 )
 
-            if from_date:
-                query = query.where(Booking.check_out_date >= from_date)
+            query = query.where(Booking.check_out_date >= from_date)
 
             if to_date:
                 query = query.where(Booking.check_in_date <= to_date)
@@ -2152,142 +2115,6 @@ class RentalManager:
         except Exception as e:
             logger.error(f"Failed to backup emergency codes to Google Sheets: {e}")
 
-    async def sync_calendars_to_ha(self) -> dict:
-        """Sync calendar iCal URLs to HA remote_calendar config entries.
-
-        For each calendar that has an iCal URL, this will:
-        1. Find the existing remote_calendar config entry by matching the title
-        2. Delete it
-        3. Re-create it with the (possibly updated) URL
-        4. Rename the entity ID back if HA assigned a different one
-
-        Returns summary of what was synced.
-        """
-        async with get_session_context() as session:
-            result = await session.execute(select(Calendar))
-            calendars = result.scalars().all()
-
-        # Get existing remote_calendar config entries from HA
-        try:
-            existing_entries = await self._ha_client.get_config_entries("remote_calendar")
-        except Exception as e:
-            logger.error(f"Failed to get remote_calendar config entries: {e}")
-            return {"error": str(e), "synced": [], "errors": []}
-
-        # Build a map of title -> config entry for matching
-        entry_by_title: dict[str, dict] = {}
-        for entry in existing_entries:
-            entry_by_title[entry.get("title", "")] = entry
-
-        synced = []
-        errors = []
-        created = []
-
-        for calendar in calendars:
-            if not calendar.ical_url:
-                continue
-
-            expected_entity_id = calendar.ha_entity_id or f"calendar.{calendar.calendar_id}"
-            cal_name = calendar.name
-
-            try:
-                # Check if entry already exists (match by title)
-                existing = entry_by_title.get(cal_name)
-
-                if existing:
-                    # Delete the old entry
-                    entry_id = existing["entry_id"]
-                    logger.info(f"Deleting remote_calendar entry '{cal_name}' ({entry_id})")
-                    await self._ha_client.delete_config_entry(entry_id)
-                    await asyncio.sleep(1)  # Let HA settle
-
-                # Create new entry with updated URL
-                logger.info(f"Creating remote_calendar entry '{cal_name}' -> {calendar.ical_url[:60]}...")
-                flow_result = await self._ha_client.create_config_flow(
-                    handler="remote_calendar",
-                    data={
-                        "name": cal_name,
-                        "url": calendar.ical_url,
-                        "verify_ssl": True,
-                    },
-                )
-
-                if flow_result.get("type") == "create_entry":
-                    new_entry_id = flow_result.get("result", {}).get("entry_id", "")
-
-                    # Try to find and rename the entity if HA assigned a different entity_id
-                    await asyncio.sleep(2)  # Wait for entity to be created
-                    try:
-                        # List config entries again to find the new entity
-                        new_entries = await self._ha_client.get_config_entries("remote_calendar")
-                        new_entry = next(
-                            (e for e in new_entries if e.get("entry_id") == new_entry_id),
-                            None,
-                        )
-
-                        if new_entry:
-                            # Try to get the entity registry entry
-                            # The entity ID format for remote_calendar is typically calendar.{slugified_name}
-                            # We may need to rename it to match our expected entity_id
-                            try:
-                                entity_reg = await self._ha_client.get_entity_registry(expected_entity_id)
-                                # Entity already has the right ID
-                            except Exception:
-                                # Entity doesn't exist with expected ID; maybe it has a _2 suffix
-                                # Try common variants
-                                for suffix in ["_2", "_3", "_4"]:
-                                    try:
-                                        actual_entity_id = expected_entity_id + suffix
-                                        entity_reg = await self._ha_client.get_entity_registry(actual_entity_id)
-                                        # Found it with suffix; rename back
-                                        await self._ha_client.update_entity_registry(
-                                            actual_entity_id,
-                                            {"new_entity_id": expected_entity_id},
-                                        )
-                                        logger.info(
-                                            f"Renamed {actual_entity_id} -> {expected_entity_id}"
-                                        )
-                                        break
-                                    except Exception:
-                                        continue
-                    except Exception as e:
-                        logger.warning(f"Could not verify/rename entity for {cal_name}: {e}")
-
-                    action = "updated" if existing else "created"
-                    synced.append({
-                        "calendar_id": calendar.calendar_id,
-                        "name": cal_name,
-                        "action": action,
-                        "entry_id": new_entry_id,
-                    })
-                    if not existing:
-                        created.append(cal_name)
-                else:
-                    errors.append({
-                        "calendar_id": calendar.calendar_id,
-                        "error": f"Unexpected flow result: {flow_result.get('type')}",
-                    })
-
-            except Exception as e:
-                logger.error(f"Failed to sync calendar {cal_name} to HA: {e}")
-                errors.append({
-                    "calendar_id": calendar.calendar_id,
-                    "error": str(e),
-                })
-
-            # Stagger between calendars to avoid overwhelming HA
-            await asyncio.sleep(1)
-
-        logger.info(
-            f"Calendar sync to HA complete: {len(synced)} synced, "
-            f"{len(created)} created, {len(errors)} errors"
-        )
-        return {
-            "synced": synced,
-            "created": created,
-            "errors": errors,
-        }
-
     async def _upsert_time_override(
         self,
         session: AsyncSession,
@@ -2771,12 +2598,14 @@ class RentalManager:
 
             logger.info(f"Retry succeeded for op #{op_id}: {action} on {lock_entity_id}")
 
-            # Log success to audit
+            # Log success to audit and update DB state
             async with get_session_context() as session:
                 result = await session.execute(
                     select(Lock).where(Lock.entity_id == lock_entity_id)
                 )
                 lock = result.scalar_one_or_none()
+                if lock and action.startswith("auto-lock"):
+                    lock.auto_lock_enabled = (action == "auto-lock on")
                 session.add(AuditLog(
                     action=f"retry_{action.replace(' ', '_').replace('-', '_')}",
                     lock_id=lock.id if lock else None,
