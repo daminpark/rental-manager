@@ -1873,13 +1873,16 @@ class RentalManager:
 
             for assignment in booking.code_assignments:
                 lock = assignment.code_slot.lock
-                slot_num = assignment.code_slot.slot_number
+                slot = assignment.code_slot
+                slot_num = slot.slot_number
 
                 if now >= assignment.activate_at and now < assignment.deactivate_at:
                     # Within active window — re-set immediately
                     try:
                         await self._set_code_with_retry(lock.entity_id, slot_num, code)
                         assignment.is_active = True
+                        slot.current_code = code
+                        slot.sync_state = CodeSyncState.ACTIVE.value
                         activated_count += 1
                     except Exception as e:
                         logger.error(
@@ -1976,7 +1979,8 @@ class RentalManager:
 
             for assignment in booking.code_assignments:
                 lock = assignment.code_slot.lock
-                slot_num = assignment.code_slot.slot_number
+                slot = assignment.code_slot
+                slot_num = slot.slot_number
 
                 assignment.code = code
 
@@ -1986,6 +1990,8 @@ class RentalManager:
                     if not booking.code_disabled:
                         try:
                             await self._set_code_with_retry(lock.entity_id, slot_num, code)
+                            slot.current_code = code
+                            slot.sync_state = CodeSyncState.ACTIVE.value
                             updated_count += 1
                         except Exception as e:
                             logger.error(
@@ -2052,13 +2058,16 @@ class RentalManager:
 
             for assignment in booking.code_assignments:
                 lock = assignment.code_slot.lock
-                slot_num = assignment.code_slot.slot_number
+                slot = assignment.code_slot
+                slot_num = slot.slot_number
 
                 if now >= assignment.activate_at and now < assignment.deactivate_at:
                     try:
                         await self._set_code_with_retry(lock.entity_id, slot_num, code)
                         assignment.is_active = True
                         assignment.code = code
+                        slot.current_code = code
+                        slot.sync_state = CodeSyncState.ACTIVE.value
                         recoded_count += 1
                         logger.info(
                             f"Recoded {lock.entity_id} slot {slot_num} "
