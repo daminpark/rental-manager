@@ -44,6 +44,7 @@ from rental_manager.db.models import (
     UnlockEvent,
 )
 from rental_manager.ha.client import HomeAssistantClient
+from rental_manager.ha.event_listener import HAEventListener
 from rental_manager.scheduler.scheduler import CodeScheduler, CodeScheduleEntry
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,11 @@ class RentalManager:
         # List of dicts: {id, lock_entity_id, lock_name, action, error, retry_count, reason, failed_at}
         self._failed_ops: list[dict] = []
         self._failed_ops_counter = 0
+        self._event_listener = HAEventListener(
+            ha_url=settings.ha_url,
+            ha_token=settings.ha_token,
+            on_lock_event=self._on_ws_lock_event,
+        )
 
     async def initialize(self) -> None:
         """Initialize the manager and all components."""
@@ -122,6 +128,9 @@ class RentalManager:
 
         # Re-hydrate scheduler from existing DB assignments (survives restart)
         await self._rehydrate_scheduler()
+
+        # Start event listener for Z-Wave lock events
+        await self._event_listener.start()
 
         # Initial calendar poll
         await self._poll_calendars()
@@ -210,6 +219,7 @@ class RentalManager:
         if self._sync_manager:
             self._sync_manager.stop()
 
+        await self._event_listener.stop()
         await self._ha_client.close()
         if self._hosttools_client:
             await self._hosttools_client.close()
@@ -2668,6 +2678,27 @@ class RentalManager:
             raise ValueError(f"Failed operation {op_id} not found")
         self._failed_ops = [o for o in self._failed_ops if o["id"] != op_id]
         return {"op_id": op_id, "dismissed": True}
+
+    async def _on_ws_lock_event(
+        self,
+        entity_id: str,
+        code_slot: Optional[int],
+        method: str,
+        event_label: str,
+    ) -> None:
+        """Callback from the HA websocket event listener for Z-Wave lock events."""
+        logger.info(
+            "WS lock event: entity=%s slot=%s method=%s label=%s",
+            entity_id, code_slot, method, event_label,
+        )
+        try:
+            await self.record_unlock_event(
+                entity_id=entity_id,
+                code_slot=code_slot,
+                method=method,
+            )
+        except Exception as e:
+            logger.error("Failed to record WS lock event: %s", e)
 
     async def record_unlock_event(
         self,
