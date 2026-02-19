@@ -651,33 +651,13 @@ class RentalManager:
         self, lock_entity_id: str, slot_number: int, booking_uid: str
     ) -> None:
         """Internal deactivation logic, must be called under _activation_lock."""
-        # Check if this slot actually has a code on the physical lock.
-        # If current_code is None, the activation was skipped (duplicate guard),
-        # so there's nothing to clear on the lock.
-        has_code = False
-        async with get_session_context() as session:
-            result = await session.execute(
-                select(Lock).options(selectinload(Lock.code_slots))
-                .where(Lock.entity_id == lock_entity_id)
-            )
-            lock = result.scalar_one_or_none()
-            if lock:
-                for slot in lock.code_slots:
-                    if slot.slot_number == slot_number and slot.current_code:
-                        has_code = True
-                        break
+        logger.info(
+            f"Deactivating code on {lock_entity_id} slot {slot_number} "
+            f"for booking {booking_uid}"
+        )
 
-        if has_code:
-            logger.info(
-                f"Deactivating code on {lock_entity_id} slot {slot_number} "
-                f"for booking {booking_uid}"
-            )
-            if self._sync_manager:
-                await self._sync_manager.clear_code(lock_entity_id, slot_number, booking_uid)
-        else:
-            logger.info(
-                f"Slot {slot_number} on {lock_entity_id} has no code — skipping Z-Wave clear"
-            )
+        if self._sync_manager:
+            await self._sync_manager.clear_code(lock_entity_id, slot_number, booking_uid)
 
         # Update DB CodeSlot and log to audit
         async with get_session_context() as session:
