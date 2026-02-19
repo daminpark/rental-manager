@@ -597,8 +597,9 @@ async def get_audit_log(
 ):
     """Get the audit log."""
     from rental_manager.db.database import get_session_context
-    from rental_manager.db.models import AuditLog, Lock
+    from rental_manager.db.models import AuditLog, Booking, Calendar, Lock
     from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
 
     async with get_session_context() as session:
         query = select(AuditLog).order_by(AuditLog.timestamp.desc())
@@ -621,6 +622,23 @@ async def get_audit_log(
             )
             lock_names = {row.id: row.name for row in lock_result}
 
+        # Build booking info lookup
+        booking_ids = {log.booking_id for log in logs if log.booking_id}
+        booking_info: dict = {}
+        if booking_ids:
+            booking_result = await session.execute(
+                select(Booking)
+                .options(selectinload(Booking.calendar))
+                .where(Booking.id.in_(booking_ids))
+            )
+            for b in booking_result.scalars():
+                booking_info[b.id] = {
+                    "guest_name": b.guest_name,
+                    "calendar_name": b.calendar.name if b.calendar else None,
+                    "check_in": b.check_in_date.isoformat(),
+                    "check_out": b.check_out_date.isoformat(),
+                }
+
         return [
             {
                 "id": log.id,
@@ -629,6 +647,7 @@ async def get_audit_log(
                 "lock_id": log.lock_id,
                 "lock_name": lock_names.get(log.lock_id),
                 "booking_id": log.booking_id,
+                "booking": booking_info.get(log.booking_id),
                 "slot_number": log.slot_number,
                 "code": log.code,
                 "details": log.details,

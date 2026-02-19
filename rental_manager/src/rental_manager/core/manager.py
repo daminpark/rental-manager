@@ -351,6 +351,12 @@ class RentalManager:
             f"Code sync failed on {lock_entity_id} slot {slot_number}: {error}"
         )
 
+        # Try to find the booking via the sync manager's slot state
+        booking_uid = None
+        if self._sync_manager:
+            slot_sync = self._sync_manager.get_slot_state(lock_entity_id, slot_number)
+            booking_uid = slot_sync.booking_uid
+
         # Log to audit
         async with get_session_context() as session:
             result = await session.execute(
@@ -358,19 +364,34 @@ class RentalManager:
             )
             lock = result.scalar_one_or_none()
 
+            booking = None
+            details = ""
+            if booking_uid:
+                booking_result = await session.execute(
+                    select(Booking)
+                    .options(selectinload(Booking.calendar))
+                    .where(Booking.uid == booking_uid)
+                )
+                booking = booking_result.scalar_one_or_none()
+                details = self._booking_details(booking)
+
             audit = AuditLog(
                 action="code_sync_failed",
                 lock_id=lock.id if lock else None,
+                booking_id=booking.id if booking else None,
                 slot_number=slot_number,
                 code=code,
+                details=details,
                 success=False,
                 error_message=error,
             )
             session.add(audit)
 
+        # Build a human-readable notification
+        notify_details = details or f"code {code}"
         await self._notify_failure(
             f"Code sync FAILED on {lock_entity_id} slot {slot_number} "
-            f"after all retries. Code: {code}. Error: {error}"
+            f"after all retries. {notify_details}. Error: {error}"
         )
 
     # Scheduler callbacks
@@ -511,6 +532,23 @@ class RentalManager:
                 f"Whole-house lock routine failed — {failed_desc}. Reason: {reason}"
             )
 
+    @staticmethod
+    def _booking_details(booking: Optional[Booking]) -> str:
+        """Build a human-readable details string for audit log entries."""
+        if not booking:
+            return ""
+        cal_name = ""
+        if booking.calendar:
+            # e.g. "195_room_1" → "Room 1", "195_suite_a" → "Suite A"
+            cal_name = booking.calendar.name
+        parts = [booking.guest_name]
+        if cal_name:
+            parts.append(cal_name)
+        ci = booking.check_in_date.strftime("%b %-d")
+        co = booking.check_out_date.strftime("%b %-d")
+        parts.append(f"{ci}–{co}")
+        return " · ".join(parts)
+
     async def _on_code_activate(
         self, lock_entity_id: str, slot_number: int, code: str, booking_uid: str
     ) -> None:
@@ -518,7 +556,9 @@ class RentalManager:
         # Guard: skip activation if booking is disabled
         async with get_session_context() as session:
             booking_result = await session.execute(
-                select(Booking).where(Booking.uid == booking_uid)
+                select(Booking)
+                .options(selectinload(Booking.calendar))
+                .where(Booking.uid == booking_uid)
             )
             booking = booking_result.scalar_one_or_none()
             if booking and booking.code_disabled:
@@ -542,6 +582,8 @@ class RentalManager:
                         )
                         return
 
+        details = self._booking_details(booking)
+
         logger.info(
             f"Activating code on {lock_entity_id} slot {slot_number} "
             f"for booking {booking_uid}"
@@ -562,9 +604,10 @@ class RentalManager:
             audit = AuditLog(
                 action="code_activated",
                 lock_id=lock.id if lock else None,
+                booking_id=booking.id if booking else None,
                 slot_number=slot_number,
                 code=code,
-                details=f"Booking: {booking_uid}",
+                details=details,
                 success=True,
             )
             session.add(audit)
@@ -583,6 +626,14 @@ class RentalManager:
 
         # Log to audit
         async with get_session_context() as session:
+            booking_result = await session.execute(
+                select(Booking)
+                .options(selectinload(Booking.calendar))
+                .where(Booking.uid == booking_uid)
+            )
+            booking = booking_result.scalar_one_or_none()
+            details = self._booking_details(booking)
+
             result = await session.execute(
                 select(Lock).where(Lock.entity_id == lock_entity_id)
             )
@@ -591,8 +642,9 @@ class RentalManager:
             audit = AuditLog(
                 action="code_deactivated",
                 lock_id=lock.id if lock else None,
+                booking_id=booking.id if booking else None,
                 slot_number=slot_number,
-                details=f"Booking: {booking_uid}",
+                details=details,
                 success=True,
             )
             session.add(audit)

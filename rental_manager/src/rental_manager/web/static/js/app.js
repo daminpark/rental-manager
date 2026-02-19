@@ -801,11 +801,12 @@ function renderActivityRow(log) {
         tdLock.textContent = '—';
     }
 
-    // Details
+    // Details — prefer details field, fall back to booking info, then error message
     const tdDetails = document.createElement('td');
     tdDetails.style.cssText = 'padding:0.4rem 0.75rem;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    tdDetails.textContent = log.details || (log.error_message ? log.error_message : '—');
-    if (log.details) tdDetails.title = log.details;
+    const detailsText = formatLogDetails(log);
+    tdDetails.textContent = detailsText;
+    if (detailsText) tdDetails.title = detailsText;
 
     // Status
     const tdStatus = document.createElement('td');
@@ -887,7 +888,7 @@ function renderGroupedRows(tbody, group) {
     // Details
     const tdDetails = document.createElement('td');
     tdDetails.style.cssText = 'padding:0.4rem 0.75rem;color:var(--text-secondary);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    tdDetails.textContent = logs[0].details || '—';
+    tdDetails.textContent = formatLogDetails(logs[0]);
 
     // Status
     const tdStatus = document.createElement('td');
@@ -989,6 +990,26 @@ function getActionLabel(action) {
         'no_code_warning': 'No Code Warning',
     };
     return labels[action] || action.replace(/_/g, ' ');
+}
+
+function formatLogDetails(log) {
+    // Use details field if it's meaningful (not just "Booking: <uid>")
+    if (log.details && !log.details.startsWith('Booking: ') && log.details !== '—') {
+        return log.details;
+    }
+    // Fall back to booking info from the API
+    if (log.booking) {
+        const b = log.booking;
+        const ci = new Date(b.check_in + 'T00:00:00');
+        const co = new Date(b.check_out + 'T00:00:00');
+        const fmtDate = (d) => d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' });
+        const parts = [b.guest_name];
+        if (b.calendar_name) parts.push(b.calendar_name);
+        parts.push(`${fmtDate(ci)}\u2013${fmtDate(co)}`);
+        return parts.join(' \u00b7 ');
+    }
+    // Fall back to error message or empty
+    return log.error_message || '—';
 }
 
 function getBatchLabel(logs) {
