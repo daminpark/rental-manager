@@ -2425,6 +2425,33 @@ class RentalManager:
             await session.commit()
         return {"level": level, "set": len(results), "errors": errors}
 
+    async def set_auto_lock_all(self, enabled: bool) -> dict:
+        """Set auto-lock on all internal locks (not front/back) for this house."""
+        INTERNAL_TYPES = ("room", "bathroom", "kitchen", "storage")
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).join(HouseModel).where(HouseModel.code == self.settings.house_code)
+            )
+            locks = [l for l in result.scalars().all() if l.lock_type in INTERNAL_TYPES]
+            results = []
+            errors = []
+            for lock in locks:
+                try:
+                    await self._ha_client.set_auto_lock(lock.entity_id, enabled)
+                    lock.auto_lock_enabled = enabled
+                    session.add(AuditLog(
+                        action="auto_lock_changed",
+                        lock_id=lock.id,
+                        details=f"Auto-lock {'enabled' if enabled else 'disabled'} on {lock.name} (bulk)",
+                        success=True,
+                    ))
+                    results.append(lock.entity_id)
+                except Exception as e:
+                    logger.error("Failed to set auto-lock on %s: %s", lock.entity_id, e)
+                    errors.append({"entity_id": lock.entity_id, "error": str(e)})
+            await session.commit()
+        return {"enabled": enabled, "set": len(results), "errors": errors}
+
     async def get_sync_status(self) -> dict:
         """Get the current sync status of all slots."""
         if not self._sync_manager:

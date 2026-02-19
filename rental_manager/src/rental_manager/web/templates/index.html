@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rental Manager</title>
-    <link rel="stylesheet" href="static/css/styles.css?v=0.4.17">
+    <link rel="stylesheet" href="static/css/styles.css?v=0.4.18">
 </head>
 <body>
     <div class="app-container">
@@ -58,6 +58,19 @@
             <div id="locks-view" class="view-content">
                 <div class="page-header">
                     <h2 class="page-title">Locks</h2>
+                </div>
+
+                <div class="card" style="margin-bottom: 1rem; padding: 0.75rem;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
+                        <span style="font-weight: 600; font-size: 0.85rem; margin-right: 0.25rem;">All Locks:</span>
+                        <button class="btn btn-sm btn-success" onclick="bulkVolume('low')">Vol Low</button>
+                        <button class="btn btn-sm btn-info" onclick="bulkVolume('silent')">Vol Silent</button>
+                        <button class="btn btn-sm btn-secondary" onclick="bulkResync()">Re-sync</button>
+                        <span style="width: 0.5rem;"></span>
+                        <span style="font-weight: 600; font-size: 0.85rem; margin-right: 0.25rem;">Internal:</span>
+                        <button class="btn btn-sm btn-success" onclick="bulkAutoLock(true)">Auto-Lock On</button>
+                        <button class="btn btn-sm btn-danger" onclick="bulkAutoLock(false)">Auto-Lock Off</button>
+                    </div>
                 </div>
 
                 <div id="lock-grid" class="lock-grid">
@@ -249,6 +262,6 @@
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="static/js/app.js?v=0.4.17"></script>
+    <script src="static/js/app.js?v=0.4.18"></script>
 </body>
 </html>

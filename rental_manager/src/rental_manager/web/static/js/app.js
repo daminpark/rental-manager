@@ -1659,6 +1659,47 @@ async function setVolume(entityId, level) {
     }
 }
 
+async function bulkVolume(level) {
+    try {
+        const result = await api('/locks/volume-all', {
+            method: 'POST',
+            body: JSON.stringify({ level }),
+        });
+        let msg = `Volume set to ${level} on ${result.set} lock(s)`;
+        if (result.errors.length > 0) msg += `, ${result.errors.length} error(s)`;
+        showToast(msg, result.errors.length > 0 ? 'error' : 'success');
+        loadLocks();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function bulkAutoLock(enabled) {
+    try {
+        const result = await api('/locks/auto-lock-all', {
+            method: 'POST',
+            body: JSON.stringify({ enabled }),
+        });
+        let msg = `Auto-lock ${enabled ? 'enabled' : 'disabled'} on ${result.set} internal lock(s)`;
+        if (result.errors.length > 0) msg += `, ${result.errors.length} error(s)`;
+        showToast(msg, result.errors.length > 0 ? 'error' : 'success');
+        loadLocks();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function bulkResync() {
+    showToast('Re-syncing all lock codes...', 'info');
+    try {
+        const result = await api('/sync-status/resync', { method: 'POST' });
+        showToast(`Re-sync: ${result.set} set, ${result.cleared} cleared, ${result.errors.length} error(s)`, 'success');
+        loadLocks();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
 function renderLockDetailControls(lock) {
     const controls = document.getElementById('lock-detail-controls');
     controls.textContent = '';

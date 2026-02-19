@@ -220,6 +220,15 @@ async def set_volume_all(
     return await manager.set_volume_all(request.level)
 
 
+@router.post("/locks/auto-lock-all")
+async def set_auto_lock_all(
+    request: AutoLockRequest,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Set auto-lock on all internal locks (excludes front/back doors)."""
+    return await manager.set_auto_lock_all(request.enabled)
+
+
 # Master and emergency code endpoints
 
 
