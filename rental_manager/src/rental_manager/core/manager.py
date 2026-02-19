@@ -2576,7 +2576,7 @@ class RentalManager:
         """Set volume on ALL locks for this house."""
         async with get_session_context() as session:
             result = await session.execute(
-                select(Lock).join(HouseModel).where(HouseModel.code == self._house_code)
+                select(Lock).join(HouseModel).where(HouseModel.code == self.settings.house_code)
             )
             locks = result.scalars().all()
             results = []
