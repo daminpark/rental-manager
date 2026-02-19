@@ -136,10 +136,9 @@ class RentalManager:
         This reads all code assignments whose deactivate_at is still in the
         future and re-schedules them so activations/deactivations fire on time.
 
-        If activate_at is already past, the code should already be on the lock
-        from before the restart — we only schedule the future deactivation
-        (no redundant re-activation).  If activate_at is still in the future,
-        we schedule both activation and deactivation as normal.
+        Also reconciles CodeSlot.current_code with actual assignment state
+        (without sending Z-Wave commands — codes persist on the physical lock
+        across addon restarts).
         """
         if not self._scheduler:
             return
@@ -149,6 +148,12 @@ class RentalManager:
         deactivate_only_count = 0
 
         async with get_session_context() as session:
+            # First, reset all CodeSlot states to idle
+            all_slots = await session.execute(select(CodeSlot))
+            for slot in all_slots.scalars().all():
+                slot.current_code = None
+                slot.sync_state = CodeSyncState.IDLE.value
+
             # Get all assignments that haven't fully expired yet
             result = await session.execute(
                 select(CodeAssignment)
@@ -175,7 +180,10 @@ class RentalManager:
                 slot_number = assignment.code_slot.slot_number
 
                 if assignment.activate_at <= now:
-                    # Code should already be on the lock — only schedule deactivation.
+                    # Code should be active now — mark CodeSlot accordingly
+                    # (no Z-Wave call needed, codes persist on the lock).
+                    assignment.code_slot.current_code = code
+                    assignment.code_slot.sync_state = CodeSyncState.ACTIVE.value
                     self._scheduler.schedule_deactivation_only(
                         lock_entity_id=lock.entity_id,
                         slot_number=slot_number,
@@ -197,6 +205,8 @@ class RentalManager:
                     )
                     self._scheduler.schedule_code(entry)
                     scheduled_count += 1
+
+            await session.commit()
 
         logger.info(
             f"Re-hydrated scheduler: {scheduled_count} future activations, "
@@ -586,51 +596,38 @@ class RentalManager:
                 logger.info(f"Skipping activation for disabled booking {booking_uid}")
                 return
 
-            # Guard: skip if same code already active on another slot of this lock.
-            # Check both DB CodeSlot.current_code AND CodeAssignment time windows
-            # to handle concurrent activations (same guest, multiple rooms).
+            # Check if same code already active on another slot of this lock.
+            # If so, skip the Z-Wave call (code is already on the physical lock)
+            # but still mark this slot as active so deactivation works correctly.
             lock_result = await session.execute(
-                select(Lock).options(
-                    selectinload(Lock.code_slots).selectinload(CodeSlot.assignments)
-                ).where(Lock.entity_id == lock_entity_id)
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
             )
             lock = lock_result.scalar_one_or_none()
+            skip_zwave = False
             if lock:
-                now = datetime.utcnow()
                 for slot in lock.code_slots:
-                    if slot.slot_number == slot_number:
-                        continue
-                    # Check 1: DB current_code already set (previous activation completed)
-                    if (slot.current_code == code
+                    if (slot.slot_number != slot_number
+                            and slot.current_code == code
                             and slot.sync_state == CodeSyncState.ACTIVE.value):
                         logger.info(
-                            f"Skipping duplicate code {code} on {lock_entity_id} slot {slot_number} "
-                            f"— already active on slot {slot.slot_number}"
+                            f"Code {code} already on {lock_entity_id} via slot {slot.slot_number} "
+                            f"— marking slot {slot_number} active without Z-Wave call"
                         )
-                        return
-                    # Check 2: another assignment with same code in its active window
-                    # (handles concurrent activations at same timestamp)
-                    for assignment in slot.assignments:
-                        if (assignment.code == code
-                                and assignment.activate_at <= now < assignment.deactivate_at):
-                            logger.info(
-                                f"Skipping duplicate code {code} on {lock_entity_id} slot {slot_number} "
-                                f"— concurrent assignment on slot {slot.slot_number} "
-                                f"(booking {assignment.booking_id})"
-                            )
-                            return
+                        skip_zwave = True
+                        break
 
         details = self._booking_details(booking)
 
-        logger.info(
-            f"Activating code on {lock_entity_id} slot {slot_number} "
-            f"for booking {booking_uid}"
-        )
-
-        if self._sync_manager:
-            await self._sync_manager.set_code(
-                lock_entity_id, slot_number, code, booking_uid
+        if not skip_zwave:
+            logger.info(
+                f"Activating code on {lock_entity_id} slot {slot_number} "
+                f"for booking {booking_uid}"
             )
+            if self._sync_manager:
+                await self._sync_manager.set_code(
+                    lock_entity_id, slot_number, code, booking_uid
+                )
 
         # Update DB CodeSlot to reflect the activation
         async with get_session_context() as session:
@@ -662,13 +659,53 @@ class RentalManager:
         self, lock_entity_id: str, slot_number: int, booking_uid: str
     ) -> None:
         """Deactivate a code on a lock."""
-        logger.info(
-            f"Deactivating code on {lock_entity_id} slot {slot_number} "
-            f"for booking {booking_uid}"
-        )
+        async with self._activation_lock:
+            await self._do_code_deactivate(lock_entity_id, slot_number, booking_uid)
 
-        if self._sync_manager:
-            await self._sync_manager.clear_code(lock_entity_id, slot_number, booking_uid)
+    async def _do_code_deactivate(
+        self, lock_entity_id: str, slot_number: int, booking_uid: str
+    ) -> None:
+        """Internal deactivation logic, must be called under _activation_lock."""
+        # Check if another slot on this lock has the same code still active.
+        # If so, skip the Z-Wave clear (code still needed for another guest).
+        skip_zwave = False
+        async with get_session_context() as session:
+            result = await session.execute(
+                select(Lock).options(selectinload(Lock.code_slots))
+                .where(Lock.entity_id == lock_entity_id)
+            )
+            lock = result.scalar_one_or_none()
+            this_code = None
+            if lock:
+                for slot in lock.code_slots:
+                    if slot.slot_number == slot_number:
+                        this_code = slot.current_code
+                        break
+                if this_code:
+                    for slot in lock.code_slots:
+                        if (slot.slot_number != slot_number
+                                and slot.current_code == this_code
+                                and slot.sync_state == CodeSyncState.ACTIVE.value):
+                            logger.info(
+                                f"Code {this_code} still needed on {lock_entity_id} "
+                                f"slot {slot.slot_number} — skipping Z-Wave clear "
+                                f"for slot {slot_number}"
+                            )
+                            skip_zwave = True
+                            break
+
+        if skip_zwave:
+            logger.info(
+                f"Marking slot {slot_number} on {lock_entity_id} as idle "
+                f"(Z-Wave clear skipped, code still active on another slot)"
+            )
+        else:
+            logger.info(
+                f"Deactivating code on {lock_entity_id} slot {slot_number} "
+                f"for booking {booking_uid}"
+            )
+            if self._sync_manager:
+                await self._sync_manager.clear_code(lock_entity_id, slot_number, booking_uid)
 
         # Update DB CodeSlot and log to audit
         async with get_session_context() as session:
