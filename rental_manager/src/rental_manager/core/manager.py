@@ -723,6 +723,23 @@ class RentalManager:
             f"Emergency codes rotated: {result['success_count']}/{result['total_locks']} locks"
         )
 
+    async def _reload_ha_calendars(self) -> None:
+        """Reload all remote_calendar config entries in HA.
+
+        Forces HA to re-fetch iCal feeds immediately instead of waiting
+        for its own 15-minute polling cycle.
+        """
+        try:
+            entries = await self._ha_client.get_config_entries("remote_calendar")
+            for entry in entries:
+                entry_id = entry.get("entry_id")
+                if entry_id:
+                    await self._ha_client.reload_config_entry(entry_id)
+            if entries:
+                logger.info(f"Reloaded {len(entries)} remote_calendar config entries")
+        except Exception as e:
+            logger.warning(f"Could not reload remote_calendar entries: {e}")
+
     async def _poll_calendars(self) -> None:
         """Poll all calendars for updates.
 
@@ -734,6 +751,9 @@ class RentalManager:
             return
         self._polling = True
         logger.info("Polling calendars...")
+
+        # Force HA to re-fetch iCal feeds before we read events
+        await self._reload_ha_calendars()
 
         async with get_session_context() as session:
             # Get all calendars

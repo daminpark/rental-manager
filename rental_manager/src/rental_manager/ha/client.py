@@ -386,6 +386,21 @@ class HomeAssistantClient:
         step_response.raise_for_status()
         return step_response.json()
 
+    async def reload_config_entry(self, entry_id: str) -> bool:
+        """Reload a config entry, forcing integrations like remote_calendar to re-fetch.
+
+        Args:
+            entry_id: The config entry ID to reload
+
+        Returns:
+            True if reload was successful
+        """
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.url}/api/config/config_entries/entry/{entry_id}/reload",
+        )
+        return response.status_code == 200
+
     async def get_entity_registry(self, entity_id: str) -> dict[str, Any]:
         """Get entity registry entry for an entity.
 
