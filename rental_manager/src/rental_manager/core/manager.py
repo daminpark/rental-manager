@@ -948,7 +948,8 @@ class RentalManager:
     ) -> None:
         """Remove a booking that no longer appears in the calendar feed.
 
-        Cancels scheduler jobs, deletes code assignments, and deletes the booking.
+        Clears active codes from locks, cancels scheduler jobs,
+        deletes code assignments, and deletes the booking.
         """
         logger.info(
             f"Removing stale booking: {booking.guest_name} "
@@ -964,11 +965,27 @@ class RentalManager:
             if jobs:
                 logger.info(f"Cancelled {len(jobs)} scheduler jobs for stale booking {booking.uid}")
 
-        # Delete code assignments
+        # Clear active codes from locks and delete assignments
+        now = datetime.utcnow()
         assignments = await session.execute(
-            select(CodeAssignment).where(CodeAssignment.booking_id == booking.id)
+            select(CodeAssignment)
+            .options(joinedload(CodeAssignment.code_slot).joinedload(CodeSlot.lock))
+            .where(CodeAssignment.booking_id == booking.id)
         )
-        for assignment in assignments.scalars().all():
+        for assignment in assignments.unique().scalars().all():
+            # If this code is currently active on a lock, clear it
+            if assignment.activate_at <= now < assignment.deactivate_at:
+                lock = assignment.code_slot.lock
+                if lock and self._sync_manager:
+                    logger.info(
+                        f"Clearing active code from {lock.entity_id} slot "
+                        f"{assignment.code_slot.slot_number} (cancelled booking)"
+                    )
+                    await self._sync_manager.clear_code(
+                        lock.entity_id,
+                        assignment.code_slot.slot_number,
+                        booking.uid,
+                    )
             await session.delete(assignment)
 
         # Delete time overrides
