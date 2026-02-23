@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rental Manager</title>
-    <link rel="stylesheet" href="static/css/styles.css?v=0.4.19">
+    <link rel="stylesheet" href="static/css/styles.css?v=0.4.22">
 </head>
 <body>
     <div class="app-container">
@@ -89,6 +89,22 @@
                         <button class="btn btn-secondary" onclick="refreshCalendars()">
                             Refresh Calendars
                         </button>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-bottom: 1rem; padding: 0.75rem;">
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
+                        <input type="text" id="booking-search" placeholder="Search guest name..."
+                            style="flex: 1; min-width: 150px; padding: 0.4rem 0.75rem; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 0.9rem;"
+                            oninput="filterBookings()">
+                        <select id="booking-date-filter"
+                            style="padding: 0.4rem 0.75rem; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 0.9rem;"
+                            onchange="filterBookings()">
+                            <option value="upcoming">Upcoming</option>
+                            <option value="current">Current</option>
+                            <option value="past">Past</option>
+                            <option value="all" selected>All</option>
+                        </select>
                     </div>
                 </div>
 
@@ -262,6 +278,6 @@
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="static/js/app.js?v=0.4.19"></script>
+    <script src="static/js/app.js?v=0.4.22"></script>
 </body>
 </html>

@@ -175,12 +175,39 @@ function countActiveCodes(lock) {
     return lock.slots.filter(s => s.is_active && s.slot_number > 1 && s.slot_number < 20).length;
 }
 
+function filterBookings() {
+    renderBookings();
+}
+
 function renderBookings() {
     const container = document.getElementById('bookings-table');
     if (!container) return;
 
     const today = new Date().toISOString().slice(0, 10);
-    const activeBookings = state.bookings.filter(b => !b.is_blocked);
+    const searchInput = document.getElementById('booking-search');
+    const dateFilter = document.getElementById('booking-date-filter');
+    const searchTerm = (searchInput ? searchInput.value : '').toLowerCase().trim();
+    const dateMode = dateFilter ? dateFilter.value : 'all';
+
+    let activeBookings = state.bookings.filter(b => !b.is_blocked);
+
+    // Apply guest name search
+    if (searchTerm) {
+        activeBookings = activeBookings.filter(b =>
+            (b.guest_name || '').toLowerCase().includes(searchTerm) ||
+            (b.code || '').includes(searchTerm) ||
+            (b.calendar_id || '').toLowerCase().includes(searchTerm)
+        );
+    }
+
+    // Apply date filter
+    if (dateMode === 'upcoming') {
+        activeBookings = activeBookings.filter(b => b.check_in_date > today);
+    } else if (dateMode === 'current') {
+        activeBookings = activeBookings.filter(b => b.check_in_date <= today && b.check_out_date >= today);
+    } else if (dateMode === 'past') {
+        activeBookings = activeBookings.filter(b => b.check_out_date < today);
+    }
 
     // Group by calendar_id
     const grouped = {};

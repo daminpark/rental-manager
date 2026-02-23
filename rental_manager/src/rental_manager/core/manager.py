@@ -2175,6 +2175,11 @@ class RentalManager:
         If the lock is a room lock, bathroom locks for the same booking
         are automatically updated to match (pegged timing).
         """
+        # Strip timezone info — the system uses naive datetimes (UTC)
+        if activate_at and activate_at.tzinfo is not None:
+            activate_at = activate_at.replace(tzinfo=None)
+        if deactivate_at and deactivate_at.tzinfo is not None:
+            deactivate_at = deactivate_at.replace(tzinfo=None)
         async with get_session_context() as session:
             override = await self._upsert_time_override(
                 session, booking_id, lock_id, activate_at, deactivate_at, notes,
