@@ -4,6 +4,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -25,10 +26,20 @@ STATIC_DIR = WEB_DIR / "static"
 TEMPLATES_DIR = WEB_DIR / "templates"
 
 # Configure logging
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+log_level = logging.DEBUG if settings.debug else logging.INFO
+logging.basicConfig(level=log_level, format=LOG_FORMAT)
+
+# Add rotating file handler — keeps 3 x 2MB files (~6MB total)
+LOG_DIR = Path("/data/logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+file_handler = RotatingFileHandler(
+    LOG_DIR / "rental_manager.log", maxBytes=2 * 1024 * 1024, backupCount=3,
 )
+file_handler.setLevel(log_level)
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+logging.getLogger().addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
 
 # Global manager instance
