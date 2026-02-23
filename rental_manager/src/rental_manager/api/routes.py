@@ -561,3 +561,22 @@ async def get_audit_log(
             }
             for log in logs
         ]
+
+
+@router.get("/logs")
+async def get_logs(
+    lines: int = Query(200, le=2000),
+    search: Optional[str] = None,
+):
+    """Read the persistent log file. Returns the last N lines."""
+    from pathlib import Path
+
+    log_file = Path("/data/logs/rental_manager.log")
+    if not log_file.exists():
+        return {"lines": [], "total": 0}
+
+    all_lines = log_file.read_text().splitlines()
+    if search:
+        all_lines = [l for l in all_lines if search.lower() in l.lower()]
+
+    return {"lines": all_lines[-lines:], "total": len(all_lines)}
