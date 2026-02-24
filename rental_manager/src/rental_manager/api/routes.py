@@ -580,3 +580,37 @@ async def get_logs(
         all_lines = [l for l in all_lines if search.lower() in l.lower()]
 
     return {"lines": all_lines[-lines:], "total": len(all_lines)}
+
+
+@router.get("/ha-state/{entity_id:path}")
+async def get_ha_state(
+    entity_id: str,
+    manager: RentalManager = Depends(get_manager),
+):
+    """Proxy to get a HA entity state. Useful for debugging."""
+    import httpx
+
+    client = await manager._ha_client._get_client()
+    url = f"{manager._ha_client.url}/api/states/{entity_id}"
+    resp = await client.get(url)
+    return resp.json()
+
+
+@router.get("/ha-states")
+async def search_ha_states(
+    search: str = Query(...),
+    manager: RentalManager = Depends(get_manager),
+):
+    """Search HA entity states by keyword."""
+    import httpx
+
+    client = await manager._ha_client._get_client()
+    url = f"{manager._ha_client.url}/api/states"
+    resp = await client.get(url)
+    states = resp.json()
+    results = [
+        {"entity_id": s["entity_id"], "state": s["state"], "last_changed": s.get("last_changed")}
+        for s in states
+        if search.lower() in s["entity_id"].lower()
+    ]
+    return results
