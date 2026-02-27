@@ -18,6 +18,7 @@ from rental_manager.config import (
     build_locks,
     build_calendars,
     get_slot_for_calendar,
+    DEFAULT_TIMINGS,
     MASTER_CODE_SLOT,
     EMERGENCY_CODE_SLOT,
 )
@@ -854,6 +855,9 @@ class RentalManager:
             # Check for upcoming bookings without codes
             await self._check_upcoming_no_code_bookings(session)
 
+            # Validate and fix assignment times that don't match expected timing
+            await self._validate_assignment_times(session)
+
             await session.commit()
 
         self._polling = False
@@ -1097,6 +1101,97 @@ class RentalManager:
                 details=f"No code for {booking.guest_name} checking in {booking.check_in_date}",
                 success=True,
             ))
+
+    async def _validate_assignment_times(self, session: AsyncSession) -> None:
+        """Validate and fix CodeAssignment times that don't match expected lock timing.
+
+        Detects assignments created with wrong lock_type timing (e.g. bathroom
+        getting kitchen's 15:00 instead of 12:00) and corrects them. Skips
+        assignments that have manual TimeOverrides.
+        """
+        now = datetime.utcnow()
+        today = date.today()
+
+        # Get all future/active assignments with their relationships
+        result = await session.execute(
+            select(CodeAssignment)
+            .options(
+                joinedload(CodeAssignment.code_slot).joinedload(CodeSlot.lock),
+                joinedload(CodeAssignment.booking).joinedload(Booking.calendar),
+            )
+            .where(CodeAssignment.deactivate_at > now)
+        )
+        assignments = result.unique().scalars().all()
+
+        fixed_count = 0
+        for assignment in assignments:
+            slot = assignment.code_slot
+            lock = slot.lock if slot else None
+            booking = assignment.booking
+            if not lock or not booking:
+                continue
+
+            lock_type = LockType(lock.lock_type)
+
+            # Check if a manual TimeOverride exists for this lock+booking
+            override_result = await session.execute(
+                select(TimeOverride).where(
+                    TimeOverride.booking_id == booking.id,
+                    TimeOverride.lock_id == lock.id,
+                )
+            )
+            override = override_result.scalar_one_or_none()
+
+            expected_activate, expected_deactivate = calculate_code_times(
+                lock_type=lock_type,
+                check_in_date=booking.check_in_date,
+                check_out_date=booking.check_out_date,
+                stagger_minutes=lock.stagger_minutes,
+                override_activate=override.activate_at if override else None,
+                override_deactivate=override.deactivate_at if override else None,
+            )
+
+            needs_fix = False
+            if assignment.activate_at != expected_activate:
+                logger.warning(
+                    "Assignment time mismatch: %s slot %d for %s — "
+                    "activate_at=%s expected=%s (lock_type=%s)",
+                    lock.entity_id, slot.slot_number, booking.guest_name,
+                    assignment.activate_at, expected_activate, lock.lock_type,
+                )
+                assignment.activate_at = expected_activate
+                needs_fix = True
+
+            if assignment.deactivate_at != expected_deactivate:
+                logger.warning(
+                    "Assignment time mismatch: %s slot %d for %s — "
+                    "deactivate_at=%s expected=%s (lock_type=%s)",
+                    lock.entity_id, slot.slot_number, booking.guest_name,
+                    assignment.deactivate_at, expected_deactivate, lock.lock_type,
+                )
+                assignment.deactivate_at = expected_deactivate
+                needs_fix = True
+
+            if needs_fix:
+                fixed_count += 1
+                # Reschedule if scheduler is running
+                if self._scheduler and booking.calendar:
+                    code = booking.locked_code or generate_code_from_phone(booking.phone)
+                    if code:
+                        entry = CodeScheduleEntry(
+                            lock_entity_id=lock.entity_id,
+                            slot_number=slot.slot_number,
+                            code=code,
+                            activate_at=expected_activate,
+                            deactivate_at=expected_deactivate,
+                            booking_uid=booking.uid,
+                            calendar_id=booking.calendar.calendar_id,
+                            guest_name=booking.guest_name,
+                        )
+                        self._scheduler.schedule_code(entry)
+
+        if fixed_count:
+            logger.info("Fixed %d assignment time mismatches", fixed_count)
 
     async def _create_code_assignments(
         self, session: AsyncSession, booking: Booking, code: str
