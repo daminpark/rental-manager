@@ -582,6 +582,37 @@ async def get_logs(
     return {"lines": all_lines[-lines:], "total": len(all_lines)}
 
 
+@router.get("/debug/assignments/{booking_id}")
+async def debug_assignments(booking_id: int):
+    """Debug: show raw CodeAssignment data for a booking."""
+    from rental_manager.db.database import get_session_context
+    from rental_manager.db.models import CodeAssignment, CodeSlot, Lock
+    from sqlalchemy import select
+    from sqlalchemy.orm import joinedload
+
+    async with get_session_context() as session:
+        result = await session.execute(
+            select(CodeAssignment)
+            .options(joinedload(CodeAssignment.code_slot).joinedload(CodeSlot.lock))
+            .where(CodeAssignment.booking_id == booking_id)
+        )
+        assignments = result.unique().scalars().all()
+        return [
+            {
+                "id": a.id,
+                "lock": a.code_slot.lock.entity_id,
+                "slot": a.code_slot.slot_number,
+                "code": a.code,
+                "activate_at": a.activate_at.isoformat() if a.activate_at else None,
+                "deactivate_at": a.deactivate_at.isoformat() if a.deactivate_at else None,
+                "is_active": a.is_active,
+                "slot_current_code": a.code_slot.current_code,
+                "slot_sync_state": a.code_slot.sync_state,
+            }
+            for a in assignments
+        ]
+
+
 @router.get("/ha-state/{entity_id:path}")
 async def get_ha_state(
     entity_id: str,
