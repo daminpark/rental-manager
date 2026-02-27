@@ -1178,17 +1178,31 @@ class RentalManager:
                 if self._scheduler and booking.calendar:
                     code = booking.locked_code or generate_code_from_phone(booking.phone)
                     if code:
-                        entry = CodeScheduleEntry(
-                            lock_entity_id=lock.entity_id,
-                            slot_number=slot.slot_number,
-                            code=code,
-                            activate_at=expected_activate,
-                            deactivate_at=expected_deactivate,
-                            booking_uid=booking.uid,
-                            calendar_id=booking.calendar.calendar_id,
-                            guest_name=booking.guest_name,
+                        # If code is already on the lock, only reschedule deactivation
+                        # to avoid redundant Z-Wave commands that drain battery
+                        code_already_on_lock = (
+                            slot.current_code == code
+                            and slot.sync_state == CodeSyncState.ACTIVE.value
                         )
-                        self._scheduler.schedule_code(entry)
+                        if code_already_on_lock:
+                            self._scheduler.schedule_deactivation_only(
+                                lock_entity_id=lock.entity_id,
+                                slot_number=slot.slot_number,
+                                booking_uid=booking.uid,
+                                deactivate_at=expected_deactivate,
+                            )
+                        else:
+                            entry = CodeScheduleEntry(
+                                lock_entity_id=lock.entity_id,
+                                slot_number=slot.slot_number,
+                                code=code,
+                                activate_at=expected_activate,
+                                deactivate_at=expected_deactivate,
+                                booking_uid=booking.uid,
+                                calendar_id=booking.calendar.calendar_id,
+                                guest_name=booking.guest_name,
+                            )
+                            self._scheduler.schedule_code(entry)
 
         if fixed_count:
             logger.info("Fixed %d assignment time mismatches", fixed_count)
