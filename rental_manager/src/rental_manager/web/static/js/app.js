@@ -346,21 +346,25 @@ function createBookingRow(booking, today) {
     }
 
     const guestCell = document.createElement('td');
+    guestCell.setAttribute('data-label', 'Guest');
     guestCell.textContent = booking.guest_name;
     guestCell.style.padding = '0.5rem 0.75rem';
     row.appendChild(guestCell);
 
     const checkinCell = document.createElement('td');
+    checkinCell.setAttribute('data-label', 'Check-in');
     checkinCell.textContent = booking.check_in_date;
     checkinCell.style.padding = '0.5rem 0.75rem';
     row.appendChild(checkinCell);
 
     const checkoutCell = document.createElement('td');
+    checkoutCell.setAttribute('data-label', 'Check-out');
     checkoutCell.textContent = booking.check_out_date;
     checkoutCell.style.padding = '0.5rem 0.75rem';
     row.appendChild(checkoutCell);
 
     const codeCell = document.createElement('td');
+    codeCell.setAttribute('data-label', 'Code');
     codeCell.style.padding = '0.5rem 0.75rem';
     if (booking.code_disabled) {
         const disabledBadge = document.createElement('span');
@@ -383,6 +387,7 @@ function createBookingRow(booking, today) {
     row.appendChild(codeCell);
 
     const channelCell = document.createElement('td');
+    channelCell.setAttribute('data-label', 'Channel');
     channelCell.style.padding = '0.5rem 0.75rem';
     const badge = document.createElement('span');
     badge.className = 'badge badge-info';
@@ -391,8 +396,8 @@ function createBookingRow(booking, today) {
     row.appendChild(channelCell);
 
     const actionsCell = document.createElement('td');
+    actionsCell.className = 'booking-actions-cell';
     actionsCell.style.padding = '0.5rem 0.75rem';
-    actionsCell.style.whiteSpace = 'nowrap';
 
     const timesBtn = document.createElement('button');
     timesBtn.className = 'btn btn-sm btn-secondary';

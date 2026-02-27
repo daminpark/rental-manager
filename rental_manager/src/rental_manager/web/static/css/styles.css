@@ -676,16 +676,58 @@ tr:hover {
     }
 }
 
+/* Booking actions cell — wrap on all sizes */
+.booking-actions-cell {
+    white-space: normal;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .sidebar {
         width: 100%;
         height: auto;
         position: relative;
+        padding: 0.5rem;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .sidebar-header {
+        display: none;
+    }
+
+    .sidebar nav {
+        display: flex;
+        overflow-x: auto;
+        gap: 0;
+    }
+
+    .sidebar .nav-section {
+        display: flex;
+        margin-bottom: 0;
+        gap: 0.25rem;
+    }
+
+    .sidebar .nav-section-title {
+        display: none;
+    }
+
+    .sidebar .nav-item {
+        padding: 0.5rem 0.75rem;
+        white-space: nowrap;
+        font-size: 0.8rem;
+    }
+
+    .sidebar .nav-item .nav-item-icon {
+        margin-right: 0.25rem;
     }
 
     .main-content {
         margin-left: 0;
+        padding: 0.75rem;
     }
 
     .app-container {
@@ -694,5 +736,107 @@ tr:hover {
 
     .lock-grid {
         grid-template-columns: 1fr;
+    }
+
+    /* Booking table → card layout on mobile */
+    .booking-listing-card table thead {
+        display: none;
+    }
+
+    .booking-listing-card table,
+    .booking-listing-card table tbody {
+        display: block;
+        width: 100%;
+    }
+
+    .booking-listing-card table tr {
+        display: block;
+        padding: 0.75rem;
+        border-bottom: 1px solid var(--border-color);
+        position: relative;
+    }
+
+    .booking-listing-card table tr:last-child {
+        border-bottom: none;
+    }
+
+    .booking-listing-card table td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.25rem 0 !important;
+        border-bottom: none;
+        font-size: 0.875rem;
+    }
+
+    .booking-listing-card table td::before {
+        content: attr(data-label);
+        font-weight: 600;
+        font-size: 0.75rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        min-width: 5rem;
+        flex-shrink: 0;
+    }
+
+    .booking-listing-card table td.booking-actions-cell {
+        justify-content: flex-start;
+        flex-wrap: wrap;
+        gap: 0.375rem;
+        padding-top: 0.5rem !important;
+        margin-top: 0.25rem;
+        border-top: 1px solid var(--border-color);
+    }
+
+    .booking-listing-card table td.booking-actions-cell::before {
+        display: none;
+    }
+
+    .booking-listing-card table td.booking-actions-cell .btn {
+        margin-left: 0 !important;
+    }
+
+    /* Page header stacks vertically */
+    .page-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+    }
+
+    .header-actions {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    /* Filters stack */
+    .filters {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .filter-group {
+        width: 100%;
+    }
+
+    .filter-group .form-input,
+    .filter-group .form-select {
+        flex: 1;
+    }
+
+    /* Modal full-width on mobile */
+    .modal {
+        margin: 0.5rem;
+        max-width: calc(100% - 1rem);
+    }
+
+    /* Toast fits mobile */
+    .toast-container {
+        left: 0.5rem;
+        right: 0.5rem;
+    }
+
+    .toast {
+        min-width: 0;
+        width: 100%;
     }
 }
