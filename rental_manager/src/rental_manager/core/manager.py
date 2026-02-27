@@ -177,6 +177,11 @@ class RentalManager:
 
                 code = assignment.code
                 if not code:
+                    logger.debug(
+                        "Skipping assignment with no code: booking=%s lock=%s slot=%d",
+                        booking.guest_name, assignment.code_slot.lock.entity_id,
+                        assignment.code_slot.slot_number,
+                    )
                     continue
 
                 lock = assignment.code_slot.lock
