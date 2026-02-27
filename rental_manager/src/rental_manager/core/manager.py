@@ -166,6 +166,8 @@ class RentalManager:
             )
             assignments = result.unique().scalars().all()
 
+            missed_count = 0
+
             for assignment in assignments:
                 booking = assignment.booking
                 if not booking or not booking.calendar:
@@ -178,17 +180,44 @@ class RentalManager:
                     continue
 
                 lock = assignment.code_slot.lock
-                slot_number = assignment.code_slot.slot_number
+                slot = assignment.code_slot
+                slot_number = slot.slot_number
 
                 if assignment.activate_at <= now:
-                    # Code should already be on the lock — only schedule deactivation.
-                    self._scheduler.schedule_deactivation_only(
-                        lock_entity_id=lock.entity_id,
-                        slot_number=slot_number,
-                        booking_uid=booking.uid,
-                        deactivate_at=assignment.deactivate_at,
+                    # Activation time has passed. Check if the code was actually
+                    # pushed to the lock — if not, it was missed (e.g. addon
+                    # restarted after activation time).
+                    code_on_lock = (
+                        slot.current_code == code
+                        and slot.sync_state == CodeSyncState.ACTIVE.value
                     )
-                    deactivate_only_count += 1
+                    if code_on_lock:
+                        # Code is on the lock — only schedule deactivation.
+                        self._scheduler.schedule_deactivation_only(
+                            lock_entity_id=lock.entity_id,
+                            slot_number=slot_number,
+                            booking_uid=booking.uid,
+                            deactivate_at=assignment.deactivate_at,
+                        )
+                        deactivate_only_count += 1
+                    else:
+                        # Missed activation — schedule immediate catch-up.
+                        logger.warning(
+                            "Missed activation: %s slot %d for %s — scheduling catch-up",
+                            lock.entity_id, slot_number, booking.guest_name,
+                        )
+                        entry = CodeScheduleEntry(
+                            lock_entity_id=lock.entity_id,
+                            slot_number=slot_number,
+                            code=code,
+                            activate_at=now,  # Activate ASAP
+                            deactivate_at=assignment.deactivate_at,
+                            booking_uid=booking.uid,
+                            calendar_id=booking.calendar.calendar_id,
+                            guest_name=booking.guest_name,
+                        )
+                        self._scheduler.schedule_code(entry)
+                        missed_count += 1
                 else:
                     # Activation is still in the future — schedule both.
                     entry = CodeScheduleEntry(
@@ -206,7 +235,8 @@ class RentalManager:
 
         logger.info(
             f"Re-hydrated scheduler: {scheduled_count} future activations, "
-            f"{deactivate_only_count} deactivations-only (already active)"
+            f"{deactivate_only_count} deactivations-only (already active), "
+            f"{missed_count} missed activations (catch-up)"
         )
 
     async def stop(self) -> None:
