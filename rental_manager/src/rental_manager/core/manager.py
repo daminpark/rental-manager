@@ -261,6 +261,7 @@ class RentalManager:
 
         now = datetime.now()
         wh_count = 0
+        has_current_stay = False
 
         async with get_session_context() as session:
             # Find whole-house bookings with check-out still relevant
@@ -295,8 +296,6 @@ class RentalManager:
                         booking_uid=booking.uid,
                         check_out_date=booking.check_out_date,
                     )
-                    # Verify auto-lock is OFF on internal locks for current stay
-                    await self._verify_auto_lock_for_current_stay(session)
                 else:
                     # Future booking — schedule both
                     self._scheduler.schedule_whole_house(
@@ -306,44 +305,71 @@ class RentalManager:
                     )
                 wh_count += 1
 
+            # Track whether any whole-house guest is currently staying
+            has_current_stay = any(
+                datetime.combine(b.check_in_date, time(14, 30)) <= now
+                < datetime.combine(b.check_out_date, time(11, 30))
+                for b in bookings
+            )
+
         if wh_count:
             logger.info(
                 f"Re-hydrated {wh_count} whole-house auto-lock schedules"
             )
 
-    async def _verify_auto_lock_for_current_stay(
-        self, session: AsyncSession
-    ) -> None:
-        """Verify auto-lock is OFF on internal locks during a whole-house stay.
+        # Verify auto-lock state matches whether a whole-house guest is present
+        await self._verify_auto_lock_state(has_current_stay)
 
-        Checks DB state and corrects any locks that have auto-lock enabled
-        when it should be disabled for a current whole-house guest.
+    async def _verify_auto_lock_state(
+        self, has_current_stay: bool
+    ) -> None:
+        """Verify auto-lock on internal locks matches whole-house stay status.
+
+        If a whole-house guest is currently staying, auto-lock should be OFF.
+        If no whole-house guest is staying, auto-lock should be ON.
         """
         TOGGLE_TYPES = ("room", "bathroom", "kitchen")
+        expected_state = not has_current_stay  # ON if no stay, OFF if stay
 
-        result = await session.execute(select(Lock))
-        locks = [l for l in result.scalars().all() if l.lock_type in TOGGLE_TYPES]
+        async with get_session_context() as session:
+            result = await session.execute(select(Lock))
+            locks = [l for l in result.scalars().all() if l.lock_type in TOGGLE_TYPES]
 
-        corrected = 0
-        for lock in locks:
-            if lock.auto_lock_enabled is True:
-                logger.warning(
-                    "Auto-lock should be OFF during whole-house stay but DB "
-                    "shows ON for %s — correcting",
-                    lock.entity_id,
-                )
-                try:
-                    await self._ha_client.set_auto_lock(lock.entity_id, False)
-                    lock.auto_lock_enabled = False
-                    corrected += 1
-                except Exception as e:
-                    logger.error(
-                        "Failed to correct auto-lock on %s: %s",
-                        lock.entity_id, e,
+            corrected = 0
+            for lock in locks:
+                if lock.auto_lock_enabled != expected_state:
+                    state_label = "ON" if expected_state else "OFF"
+                    reason = (
+                        "no whole-house stay active"
+                        if expected_state
+                        else "whole-house guest currently staying"
                     )
+                    logger.warning(
+                        "Auto-lock should be %s (%s) but DB shows %s for %s — correcting",
+                        state_label, reason,
+                        "ON" if lock.auto_lock_enabled else "OFF",
+                        lock.entity_id,
+                    )
+                    try:
+                        await self._ha_client.set_auto_lock(
+                            lock.entity_id, expected_state
+                        )
+                        lock.auto_lock_enabled = expected_state
+                        corrected += 1
+                    except Exception as e:
+                        logger.error(
+                            "Failed to correct auto-lock on %s: %s",
+                            lock.entity_id, e,
+                        )
 
-        if corrected:
-            logger.info("Corrected auto-lock on %d locks for current stay", corrected)
+            if corrected:
+                await session.commit()
+                logger.info(
+                    "Corrected auto-lock to %s on %d internal locks (%s)",
+                    "ON" if expected_state else "OFF",
+                    corrected,
+                    "no whole-house stay" if expected_state else "whole-house stay active",
+                )
 
     async def stop(self) -> None:
         """Stop the manager."""
