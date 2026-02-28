@@ -295,6 +295,8 @@ class RentalManager:
                         booking_uid=booking.uid,
                         check_out_date=booking.check_out_date,
                     )
+                    # Verify auto-lock is OFF on internal locks for current stay
+                    await self._verify_auto_lock_for_current_stay(session)
                 else:
                     # Future booking — schedule both
                     self._scheduler.schedule_whole_house(
@@ -308,6 +310,40 @@ class RentalManager:
             logger.info(
                 f"Re-hydrated {wh_count} whole-house auto-lock schedules"
             )
+
+    async def _verify_auto_lock_for_current_stay(
+        self, session: AsyncSession
+    ) -> None:
+        """Verify auto-lock is OFF on internal locks during a whole-house stay.
+
+        Checks DB state and corrects any locks that have auto-lock enabled
+        when it should be disabled for a current whole-house guest.
+        """
+        TOGGLE_TYPES = ("room", "bathroom", "kitchen")
+
+        result = await session.execute(select(Lock))
+        locks = [l for l in result.scalars().all() if l.lock_type in TOGGLE_TYPES]
+
+        corrected = 0
+        for lock in locks:
+            if lock.auto_lock_enabled is True:
+                logger.warning(
+                    "Auto-lock should be OFF during whole-house stay but DB "
+                    "shows ON for %s — correcting",
+                    lock.entity_id,
+                )
+                try:
+                    await self._ha_client.set_auto_lock(lock.entity_id, False)
+                    lock.auto_lock_enabled = False
+                    corrected += 1
+                except Exception as e:
+                    logger.error(
+                        "Failed to correct auto-lock on %s: %s",
+                        lock.entity_id, e,
+                    )
+
+        if corrected:
+            logger.info("Corrected auto-lock on %d locks for current stay", corrected)
 
     async def stop(self) -> None:
         """Stop the manager."""
