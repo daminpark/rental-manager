@@ -542,7 +542,8 @@ class RentalManager:
         logger.info(f"Internal locks: {action_desc} — {reason}")
         bid = uuid.uuid4().hex[:12]
 
-        INTERNAL_TYPES = ("room", "bathroom", "kitchen", "storage")
+        # Storage excluded — luggage cupboard should always auto-lock
+        INTERNAL_TYPES = ("room", "bathroom", "kitchen")
 
         async with get_session_context() as session:
             result = await session.execute(select(Lock))
