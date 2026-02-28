@@ -303,6 +303,40 @@ class CodeScheduler:
 
         return checkin_job_id, checkout_job_id
 
+    def schedule_whole_house_checkout_only(
+        self, booking_uid: str, check_out_date: "date"
+    ) -> str:
+        """Schedule only the whole-house check-out (auto-lock ON).
+
+        Used during rehydration when the guest is already staying —
+        we skip the check-in catchup to avoid unnecessary lock commands.
+        """
+        now = datetime.now()
+
+        checkout_job_id = f"wh_checkout_{booking_uid}"
+        checkout_time = datetime.combine(
+            check_out_date, datetime.min.time().replace(hour=11, minute=30)
+        )
+
+        if checkout_time <= now:
+            self._catchup_queue.put_nowait(("wh_checkout", (booking_uid,)))
+        else:
+            self._scheduler.add_job(
+                self._handle_whole_house_checkout,
+                DateTrigger(run_date=checkout_time),
+                args=[booking_uid],
+                id=checkout_job_id,
+                replace_existing=True,
+            )
+            self._scheduled_jobs[checkout_job_id] = ScheduledJob(
+                job_id=checkout_job_id,
+                job_type=JobType.WHOLE_HOUSE_CHECKOUT,
+                run_at=checkout_time,
+                booking_uid=booking_uid,
+            )
+
+        return checkout_job_id
+
     def schedule_finalization(
         self, booking_uid: str, calendar_id: str, finalize_at: datetime,
         booking_id: int = 0,

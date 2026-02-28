@@ -245,6 +245,70 @@ class RentalManager:
             f"{missed_count} missed activations (catch-up)"
         )
 
+        # Re-hydrate whole-house auto-lock schedules
+        await self._rehydrate_whole_house_schedules()
+
+    async def _rehydrate_whole_house_schedules(self) -> None:
+        """Re-schedule whole-house check-in/check-out auto-lock toggles.
+
+        These are lost on restart since they're in-memory APScheduler jobs.
+        Only schedules bookings where the check-out time (11:30) is still
+        in the future, and skips the check-in catchup if the guest is
+        already staying (to avoid unnecessary lock commands).
+        """
+        if not self._scheduler:
+            return
+
+        now = datetime.now()
+        wh_count = 0
+
+        async with get_session_context() as session:
+            # Find whole-house bookings with check-out still relevant
+            result = await session.execute(
+                select(Booking)
+                .join(Calendar)
+                .options(selectinload(Booking.calendar))
+                .where(
+                    Calendar.calendar_type.in_(("whole_house", "both_houses")),
+                    Booking.is_blocked == False,
+                    Booking.check_out_date >= date.today(),
+                )
+            )
+            bookings = result.unique().scalars().all()
+
+            for booking in bookings:
+                checkout_time = datetime.combine(
+                    booking.check_out_date, time(11, 30)
+                )
+                checkin_time = datetime.combine(
+                    booking.check_in_date, time(14, 30)
+                )
+
+                if checkout_time <= now:
+                    # Check-out already passed — guest left, skip entirely
+                    continue
+
+                if checkin_time <= now:
+                    # Guest is currently staying — only schedule check-out,
+                    # don't fire check-in catchup (avoids unlocking all locks)
+                    self._scheduler.schedule_whole_house_checkout_only(
+                        booking_uid=booking.uid,
+                        check_out_date=booking.check_out_date,
+                    )
+                else:
+                    # Future booking — schedule both
+                    self._scheduler.schedule_whole_house(
+                        booking_uid=booking.uid,
+                        check_in_date=booking.check_in_date,
+                        check_out_date=booking.check_out_date,
+                    )
+                wh_count += 1
+
+        if wh_count:
+            logger.info(
+                f"Re-hydrated {wh_count} whole-house auto-lock schedules"
+            )
+
     async def stop(self) -> None:
         """Stop the manager."""
         self._running = False
