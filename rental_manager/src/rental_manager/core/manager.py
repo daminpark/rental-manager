@@ -1386,16 +1386,17 @@ class RentalManager:
                 override_deactivate=override.deactivate_at if override else None,
             )
 
-            # Allocate slot — find any assignments that overlap with this
-            # booking's time window (not just "active right now"), so we
-            # don't overwrite a code that's still valid.
+            # Allocate slot — claim the slot until end of checkout day
+            # (not just until deactivate_at) so admins can extend codes
+            # via overrides without colliding with the next booking.
             slot_a, slot_b = get_slot_for_calendar(calendar.calendar_id)
+            claim_end = datetime.combine(booking.check_out_date, time(23, 59))
             existing_assignments = [
                 a for slot in lock.code_slots
                 for a in slot.assignments
                 if slot.slot_number in (slot_a, slot_b)
-                and a.activate_at < deactivate_at
-                and a.deactivate_at > activate_at
+                and a.activate_at < claim_end
+                and datetime.combine(a.booking.check_out_date, time(23, 59)) > activate_at
             ]
             existing_uids = {a.booking.uid for a in existing_assignments}
 
