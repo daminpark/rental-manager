@@ -21,6 +21,7 @@ from rental_manager.config import (
     DEFAULT_TIMINGS,
     MASTER_CODE_SLOT,
     EMERGENCY_CODE_SLOT,
+    SLOT_ASSIGNMENTS,
 )
 from rental_manager.core.code_manager import (
     SlotAllocator,
@@ -129,6 +130,10 @@ class RentalManager:
 
         # Re-hydrate scheduler from existing DB assignments (survives restart)
         await self._rehydrate_scheduler()
+
+        # Fix any slot collisions from assignments created before
+        # end-of-checkout-day claiming was introduced
+        await self._fix_slot_collisions()
 
         # Start event listener for Z-Wave lock events
         await self._event_listener.start()
@@ -247,6 +252,108 @@ class RentalManager:
 
         # Re-hydrate whole-house auto-lock schedules
         await self._rehydrate_whole_house_schedules()
+
+    async def _fix_slot_collisions(self) -> None:
+        """Fix slot collisions from assignments created before end-of-checkout-day claiming.
+
+        Finds assignments on the same (lock, slot) whose checkout-day windows
+        overlap, and moves the newer booking to the alternate slot.
+        """
+        now = datetime.utcnow()
+        fixed = 0
+
+        # Build a reverse map: slot_number → (slot_a, slot_b) pair
+        slot_to_pair: dict[int, tuple[int, int]] = {}
+        for pair in SLOT_ASSIGNMENTS.values():
+            slot_to_pair[pair[0]] = pair
+            slot_to_pair[pair[1]] = pair
+
+        async with get_session_context() as session:
+            # Get all future/active assignments grouped by (lock, slot)
+            result = await session.execute(
+                select(CodeAssignment)
+                .options(
+                    joinedload(CodeAssignment.code_slot).joinedload(CodeSlot.lock),
+                    joinedload(CodeAssignment.booking),
+                )
+                .where(CodeAssignment.deactivate_at > now)
+            )
+            assignments = result.unique().scalars().all()
+
+            # Group by (lock_id, slot_number)
+            from collections import defaultdict
+            groups: dict[tuple[int, int], list[CodeAssignment]] = defaultdict(list)
+            for a in assignments:
+                key = (a.code_slot.lock_id, a.code_slot.slot_number)
+                groups[key].append(a)
+
+            for (lock_id, slot_num), group in groups.items():
+                if len(group) < 2:
+                    continue
+
+                # Sort by check_out_date so we compare consecutive bookings
+                group.sort(key=lambda a: a.booking.check_out_date)
+
+                for i in range(len(group) - 1):
+                    a1 = group[i]
+                    a2 = group[i + 1]
+
+                    # Check if checkout-day windows overlap
+                    end1 = datetime.combine(a1.booking.check_out_date, time(23, 59))
+                    start2 = a2.activate_at
+
+                    if end1 <= start2:
+                        continue  # No overlap
+
+                    # Collision — move the newer booking to the alternate slot
+                    pair = slot_to_pair.get(slot_num)
+                    if not pair:
+                        continue
+                    alt_slot = pair[1] if slot_num == pair[0] else pair[0]
+
+                    # Find the alternate CodeSlot on this lock
+                    alt_slot_result = await session.execute(
+                        select(CodeSlot).where(
+                            CodeSlot.lock_id == lock_id,
+                            CodeSlot.slot_number == alt_slot,
+                        )
+                    )
+                    alt_code_slot = alt_slot_result.scalar_one_or_none()
+                    if not alt_code_slot:
+                        continue
+
+                    lock_eid = a2.code_slot.lock.entity_id
+                    logger.warning(
+                        "Slot collision: %s slot %d has %s (out %s) and %s (in %s) — "
+                        "moving %s to slot %d",
+                        lock_eid, slot_num,
+                        a1.booking.guest_name, a1.booking.check_out_date,
+                        a2.booking.guest_name, a2.booking.check_in_date,
+                        a2.booking.guest_name, alt_slot,
+                    )
+
+                    a2.code_slot_id = alt_code_slot.id
+                    fixed += 1
+
+                    # Reschedule the moved assignment
+                    if self._scheduler:
+                        code = a2.code
+                        if code:
+                            entry = CodeScheduleEntry(
+                                lock_entity_id=lock_eid,
+                                slot_number=alt_slot,
+                                code=code,
+                                activate_at=a2.activate_at,
+                                deactivate_at=a2.deactivate_at,
+                                booking_uid=a2.booking.uid,
+                                calendar_id=a2.booking.calendar.calendar_id if a2.booking.calendar else "",
+                                guest_name=a2.booking.guest_name,
+                            )
+                            self._scheduler.schedule_code(entry)
+
+            if fixed:
+                await session.commit()
+                logger.info("Fixed %d slot collisions on startup", fixed)
 
     async def _rehydrate_whole_house_schedules(self) -> None:
         """Re-schedule whole-house check-in/check-out auto-lock toggles.
