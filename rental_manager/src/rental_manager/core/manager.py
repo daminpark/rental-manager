@@ -269,16 +269,25 @@ class RentalManager:
             slot_to_pair[pair[1]] = pair
 
         async with get_session_context() as session:
-            # Get all future/active assignments grouped by (lock, slot)
+            # Get all future/active assignments with relationships pre-loaded
             result = await session.execute(
                 select(CodeAssignment)
                 .options(
                     joinedload(CodeAssignment.code_slot).joinedload(CodeSlot.lock),
-                    joinedload(CodeAssignment.booking),
+                    joinedload(CodeAssignment.booking).joinedload(Booking.calendar),
                 )
                 .where(CodeAssignment.deactivate_at > now)
             )
             assignments = result.unique().scalars().all()
+
+            # Pre-load all CodeSlots so we don't need queries inside the loop
+            all_slots_result = await session.execute(
+                select(CodeSlot)
+            )
+            all_slots = all_slots_result.scalars().all()
+            slot_lookup: dict[tuple[int, int], CodeSlot] = {
+                (s.lock_id, s.slot_number): s for s in all_slots
+            }
 
             # Group by (lock_id, slot_number)
             from collections import defaultdict
@@ -286,6 +295,9 @@ class RentalManager:
             for a in assignments:
                 key = (a.code_slot.lock_id, a.code_slot.slot_number)
                 groups[key].append(a)
+
+            # Collect changes to apply (avoid dirty session during iteration)
+            moves: list[tuple[CodeAssignment, CodeSlot, int, str]] = []
 
             for (lock_id, slot_num), group in groups.items():
                 if len(group) < 2:
@@ -311,14 +323,7 @@ class RentalManager:
                         continue
                     alt_slot = pair[1] if slot_num == pair[0] else pair[0]
 
-                    # Find the alternate CodeSlot on this lock
-                    alt_slot_result = await session.execute(
-                        select(CodeSlot).where(
-                            CodeSlot.lock_id == lock_id,
-                            CodeSlot.slot_number == alt_slot,
-                        )
-                    )
-                    alt_code_slot = alt_slot_result.scalar_one_or_none()
+                    alt_code_slot = slot_lookup.get((lock_id, alt_slot))
                     if not alt_code_slot:
                         continue
 
@@ -332,24 +337,31 @@ class RentalManager:
                         a2.booking.guest_name, alt_slot,
                     )
 
-                    a2.code_slot_id = alt_code_slot.id
-                    fixed += 1
+                    moves.append((a2, alt_code_slot, alt_slot, lock_eid))
 
-                    # Reschedule the moved assignment
-                    if self._scheduler:
-                        code = a2.code
-                        if code:
-                            entry = CodeScheduleEntry(
-                                lock_entity_id=lock_eid,
-                                slot_number=alt_slot,
-                                code=code,
-                                activate_at=a2.activate_at,
-                                deactivate_at=a2.deactivate_at,
-                                booking_uid=a2.booking.uid,
-                                calendar_id=a2.booking.calendar.calendar_id if a2.booking.calendar else "",
-                                guest_name=a2.booking.guest_name,
-                            )
-                            self._scheduler.schedule_code(entry)
+            # Apply all moves
+            for a2, alt_code_slot, alt_slot, lock_eid in moves:
+                a2.code_slot_id = alt_code_slot.id
+                fixed += 1
+
+                # Reschedule the moved assignment
+                if self._scheduler:
+                    code = a2.code
+                    cal_id = ""
+                    if a2.booking.calendar:
+                        cal_id = a2.booking.calendar.calendar_id
+                    if code:
+                        entry = CodeScheduleEntry(
+                            lock_entity_id=lock_eid,
+                            slot_number=alt_slot,
+                            code=code,
+                            activate_at=a2.activate_at,
+                            deactivate_at=a2.deactivate_at,
+                            booking_uid=a2.booking.uid,
+                            calendar_id=cal_id,
+                            guest_name=a2.booking.guest_name,
+                        )
+                        self._scheduler.schedule_code(entry)
 
             if fixed:
                 await session.commit()
