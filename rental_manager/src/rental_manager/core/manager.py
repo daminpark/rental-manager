@@ -128,12 +128,13 @@ class RentalManager:
         if self._scheduler:
             self._scheduler.start()
 
+        # Fix any slot collisions from assignments created before
+        # end-of-checkout-day claiming was introduced (must run BEFORE
+        # rehydration so scheduler picks up corrected slot assignments)
+        await self._fix_slot_collisions()
+
         # Re-hydrate scheduler from existing DB assignments (survives restart)
         await self._rehydrate_scheduler()
-
-        # Fix any slot collisions from assignments created before
-        # end-of-checkout-day claiming was introduced
-        await self._fix_slot_collisions()
 
         # Start event listener for Z-Wave lock events
         await self._event_listener.start()
@@ -875,8 +876,9 @@ class RentalManager:
                 return
 
             # Guard: if same code is already on another slot of this lock,
-            # clear the old slot first (Z-Wave can't hold the same code on two slots).
-            # This happens when a slot collision fix moves an assignment to a new slot.
+            # skip activation (Z-Wave can't hold the same code on two slots).
+            # This is expected for multi-room bookings where the same guest
+            # has the same code on the front lock from two different room calendars.
             lock_result = await session.execute(
                 select(Lock).options(selectinload(Lock.code_slots))
                 .where(Lock.entity_id == lock_entity_id)
@@ -888,14 +890,10 @@ class RentalManager:
                             and slot.current_code == code
                             and slot.sync_state == CodeSyncState.ACTIVE.value):
                         logger.info(
-                            f"Clearing duplicate code {code} from {lock_entity_id} "
-                            f"slot {slot.slot_number} before setting on slot {slot_number}"
+                            f"Skipping duplicate code {code} on {lock_entity_id} "
+                            f"slot {slot_number} — already on slot {slot.slot_number}"
                         )
-                        if self._sync_manager:
-                            await self._sync_manager.clear_code(
-                                lock_entity_id, slot.slot_number, booking_uid
-                            )
-                        break
+                        return
 
         details = self._booking_details(booking)
 
@@ -1613,18 +1611,31 @@ class RentalManager:
 
             now = datetime.utcnow()
 
+            today = date.today()
+
             def _slot_info(slot: CodeSlot) -> dict:
                 info: dict = {
                     "slot_number": slot.slot_number,
                     "current_code": slot.current_code,
                     "sync_state": slot.sync_state,
                 }
-                # Find the active or upcoming assignment for this slot
+                # Find the active assignment for this slot
                 active = None
                 for a in slot.assignments:
                     if a.booking and a.activate_at <= now < a.deactivate_at:
                         active = a
                         break
+                # Fallback: deactivated but booking still checking out today
+                # (slot is still "claimed" for the rest of the checkout day)
+                if not active:
+                    checkout_today = [
+                        a for a in slot.assignments
+                        if a.booking
+                        and a.deactivate_at <= now
+                        and a.booking.check_out_date >= today
+                    ]
+                    if checkout_today:
+                        active = max(checkout_today, key=lambda a: a.deactivate_at)
                 # Fallback: find the next upcoming assignment
                 if not active:
                     upcoming = [
