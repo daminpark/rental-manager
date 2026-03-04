@@ -874,8 +874,9 @@ class RentalManager:
                 logger.info(f"Skipping activation for disabled booking {booking_uid}")
                 return
 
-            # Guard: skip entirely if same code already on another slot of this lock.
-            # Z-Wave locks cannot hold the same code on two different slots.
+            # Guard: if same code is already on another slot of this lock,
+            # clear the old slot first (Z-Wave can't hold the same code on two slots).
+            # This happens when a slot collision fix moves an assignment to a new slot.
             lock_result = await session.execute(
                 select(Lock).options(selectinload(Lock.code_slots))
                 .where(Lock.entity_id == lock_entity_id)
@@ -887,10 +888,14 @@ class RentalManager:
                             and slot.current_code == code
                             and slot.sync_state == CodeSyncState.ACTIVE.value):
                         logger.info(
-                            f"Skipping duplicate code {code} on {lock_entity_id} slot {slot_number} "
-                            f"— already on slot {slot.slot_number}"
+                            f"Clearing duplicate code {code} from {lock_entity_id} "
+                            f"slot {slot.slot_number} before setting on slot {slot_number}"
                         )
-                        return
+                        if self._sync_manager:
+                            await self._sync_manager.clear_code(
+                                lock_entity_id, slot.slot_number, booking_uid
+                            )
+                        break
 
         details = self._booking_details(booking)
 
